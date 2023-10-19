@@ -718,47 +718,55 @@ BOOST_AUTO_TEST_CASE(get_local_addr_for_peer_port)
 
 BOOST_AUTO_TEST_CASE(LimitedAndReachable_Network)
 {
-    BOOST_CHECK(IsReachable(NET_IPV4));
-    BOOST_CHECK(IsReachable(NET_IPV6));
-    BOOST_CHECK(IsReachable(NET_ONION));
-    BOOST_CHECK(IsReachable(NET_I2P));
-    BOOST_CHECK(IsReachable(NET_CJDNS));
+    BOOST_CHECK(g_reachable_nets.Contains(NET_IPV4));
+    BOOST_CHECK(g_reachable_nets.Contains(NET_IPV6));
+    BOOST_CHECK(g_reachable_nets.Contains(NET_ONION));
+    BOOST_CHECK(g_reachable_nets.Contains(NET_I2P));
+    BOOST_CHECK(g_reachable_nets.Contains(NET_CJDNS));
 
-    SetReachable(NET_IPV4, false);
-    SetReachable(NET_IPV6, false);
-    SetReachable(NET_ONION, false);
-    SetReachable(NET_I2P, false);
-    SetReachable(NET_CJDNS, false);
+    g_reachable_nets.Remove(NET_IPV4);
+    g_reachable_nets.Remove(NET_IPV6);
+    g_reachable_nets.Remove(NET_ONION);
+    g_reachable_nets.Remove(NET_I2P);
+    g_reachable_nets.Remove(NET_CJDNS);
 
-    BOOST_CHECK(!IsReachable(NET_IPV4));
-    BOOST_CHECK(!IsReachable(NET_IPV6));
-    BOOST_CHECK(!IsReachable(NET_ONION));
-    BOOST_CHECK(!IsReachable(NET_I2P));
-    BOOST_CHECK(!IsReachable(NET_CJDNS));
+    BOOST_CHECK(!g_reachable_nets.Contains(NET_IPV4));
+    BOOST_CHECK(!g_reachable_nets.Contains(NET_IPV6));
+    BOOST_CHECK(!g_reachable_nets.Contains(NET_ONION));
+    BOOST_CHECK(!g_reachable_nets.Contains(NET_I2P));
+    BOOST_CHECK(!g_reachable_nets.Contains(NET_CJDNS));
 
-    SetReachable(NET_IPV4, true);
-    SetReachable(NET_IPV6, true);
-    SetReachable(NET_ONION, true);
-    SetReachable(NET_I2P, true);
-    SetReachable(NET_CJDNS, true);
+    g_reachable_nets.Add(NET_IPV4);
+    g_reachable_nets.Add(NET_IPV6);
+    g_reachable_nets.Add(NET_ONION);
+    g_reachable_nets.Add(NET_I2P);
+    g_reachable_nets.Add(NET_CJDNS);
 
-    BOOST_CHECK(IsReachable(NET_IPV4));
-    BOOST_CHECK(IsReachable(NET_IPV6));
-    BOOST_CHECK(IsReachable(NET_ONION));
-    BOOST_CHECK(IsReachable(NET_I2P));
-    BOOST_CHECK(IsReachable(NET_CJDNS));
+    BOOST_CHECK(g_reachable_nets.Contains(NET_IPV4));
+    BOOST_CHECK(g_reachable_nets.Contains(NET_IPV6));
+    BOOST_CHECK(g_reachable_nets.Contains(NET_ONION));
+    BOOST_CHECK(g_reachable_nets.Contains(NET_I2P));
+    BOOST_CHECK(g_reachable_nets.Contains(NET_CJDNS));
 }
 
 BOOST_AUTO_TEST_CASE(LimitedAndReachable_NetworkCaseUnroutableAndInternal)
 {
-    BOOST_CHECK(IsReachable(NET_UNROUTABLE));
-    BOOST_CHECK(IsReachable(NET_INTERNAL));
+    // Should be reachable by default.
+    BOOST_CHECK(g_reachable_nets.Contains(NET_UNROUTABLE));
+    BOOST_CHECK(g_reachable_nets.Contains(NET_INTERNAL));
 
-    SetReachable(NET_UNROUTABLE, false);
-    SetReachable(NET_INTERNAL, false);
+    g_reachable_nets.RemoveAll();
 
-    BOOST_CHECK(IsReachable(NET_UNROUTABLE)); // Ignored for both networks
-    BOOST_CHECK(IsReachable(NET_INTERNAL));
+    BOOST_CHECK(!g_reachable_nets.Contains(NET_UNROUTABLE));
+    BOOST_CHECK(!g_reachable_nets.Contains(NET_INTERNAL));
+
+    g_reachable_nets.Add(NET_IPV4);
+    g_reachable_nets.Add(NET_IPV6);
+    g_reachable_nets.Add(NET_ONION);
+    g_reachable_nets.Add(NET_I2P);
+    g_reachable_nets.Add(NET_CJDNS);
+    g_reachable_nets.Add(NET_UNROUTABLE);
+    g_reachable_nets.Add(NET_INTERNAL);
 }
 
 CNetAddr UtilBuildAddress(unsigned char p1, unsigned char p2, unsigned char p3, unsigned char p4)
@@ -776,13 +784,13 @@ BOOST_AUTO_TEST_CASE(LimitedAndReachable_CNetAddr)
 {
     CNetAddr addr = UtilBuildAddress(0x001, 0x001, 0x001, 0x001); // 1.1.1.1
 
-    SetReachable(NET_IPV4, true);
-    BOOST_CHECK(IsReachable(addr));
+    g_reachable_nets.Add(NET_IPV4);
+    BOOST_CHECK(g_reachable_nets.Contains(addr));
 
-    SetReachable(NET_IPV4, false);
-    BOOST_CHECK(!IsReachable(addr));
+    g_reachable_nets.Remove(NET_IPV4);
+    BOOST_CHECK(!g_reachable_nets.Contains(addr));
 
-    SetReachable(NET_IPV4, true); // have to reset this, because this is stateful.
+    g_reachable_nets.Add(NET_IPV4); // have to reset this, because this is stateful.
 }
 
 
@@ -790,7 +798,7 @@ BOOST_AUTO_TEST_CASE(LocalAddress_BasicLifecycle)
 {
     CService addr = CService(UtilBuildAddress(0x002, 0x001, 0x001, 0x001), 1000); // 2.1.1.1:1000
 
-    SetReachable(NET_IPV4, true);
+    g_reachable_nets.Add(NET_IPV4);
 
     BOOST_CHECK(!IsLocal(addr));
     BOOST_CHECK(AddLocal(addr, 1000));
@@ -915,7 +923,7 @@ BOOST_AUTO_TEST_CASE(advertise_local_address)
                                        ConnectionType::OUTBOUND_FULL_RELAY,
                                        /*inbound_onion=*/false);
     };
-    SetReachable(NET_CJDNS, true);
+    g_reachable_nets.Add(NET_CJDNS);
 
     CAddress addr_ipv4{Lookup("1.2.3.4", 8333, false).value(), NODE_NONE};
     BOOST_REQUIRE(addr_ipv4.IsValid());
@@ -1080,9 +1088,9 @@ public:
                 bool reject{false};
                 auto msg = m_transport.GetReceivedMessage({}, reject);
                 if (reject) {
-                    ret.push_back(std::nullopt);
+                    ret.emplace_back(std::nullopt);
                 } else {
-                    ret.push_back(std::move(msg));
+                    ret.emplace_back(std::move(msg));
                 }
                 progress = true;
             }
@@ -1321,6 +1329,14 @@ public:
         SendPacket(contents);
     }
 
+    /** Test whether the transport's session ID matches the session ID we expect. */
+    void CompareSessionIDs() const
+    {
+        auto info = m_transport.GetInfo();
+        BOOST_CHECK(info.session_id);
+        BOOST_CHECK(uint256(MakeUCharSpan(m_cipher.GetSessionID())) == *info.session_id);
+    }
+
     /** Introduce a bit error in the data scheduled to be sent. */
     void Damage()
     {
@@ -1346,6 +1362,7 @@ BOOST_AUTO_TEST_CASE(v2transport_test)
         BOOST_REQUIRE(ret && ret->empty());
         tester.ReceiveGarbage();
         tester.ReceiveVersion();
+        tester.CompareSessionIDs();
         auto msg_data_1 = g_insecure_rand_ctx.randbytes<uint8_t>(InsecureRandRange(100000));
         auto msg_data_2 = g_insecure_rand_ctx.randbytes<uint8_t>(InsecureRandRange(1000));
         tester.SendMessage(uint8_t(4), msg_data_1); // cmpctblock short id
@@ -1386,6 +1403,7 @@ BOOST_AUTO_TEST_CASE(v2transport_test)
         BOOST_REQUIRE(ret && ret->empty());
         tester.ReceiveGarbage();
         tester.ReceiveVersion();
+        tester.CompareSessionIDs();
         auto msg_data_1 = g_insecure_rand_ctx.randbytes<uint8_t>(InsecureRandRange(100000));
         auto msg_data_2 = g_insecure_rand_ctx.randbytes<uint8_t>(InsecureRandRange(1000));
         tester.SendMessage(uint8_t(14), msg_data_1); // inv short id
@@ -1439,6 +1457,7 @@ BOOST_AUTO_TEST_CASE(v2transport_test)
         BOOST_REQUIRE(ret && ret->empty());
         tester.ReceiveGarbage();
         tester.ReceiveVersion();
+        tester.CompareSessionIDs();
         for (unsigned d = 0; d < num_decoys_1; ++d) {
             auto decoy_data = g_insecure_rand_ctx.randbytes<uint8_t>(InsecureRandRange(1000));
             tester.SendPacket(/*content=*/decoy_data, /*aad=*/{}, /*ignore=*/true);
@@ -1516,6 +1535,7 @@ BOOST_AUTO_TEST_CASE(v2transport_test)
         BOOST_REQUIRE(ret && ret->empty());
         tester.ReceiveGarbage();
         tester.ReceiveVersion();
+        tester.CompareSessionIDs();
         auto msg_data_1 = g_insecure_rand_ctx.randbytes<uint8_t>(4000000); // test that receiving 4M payload works
         auto msg_data_2 = g_insecure_rand_ctx.randbytes<uint8_t>(4000000); // test that sending 4M payload works
         tester.SendMessage(uint8_t(InsecureRandRange(223) + 33), {}); // unknown short id
