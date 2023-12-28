@@ -364,8 +364,8 @@ class P2PInterface(P2PConnection):
         vt.addrFrom.port = 0
         self.on_connection_send_msg = vt  # Will be sent in connection_made callback
 
-    def peer_connect(self, *args, services=P2P_SERVICES, send_version=True, **kwargs):
-        create_conn = super().peer_connect(*args, **kwargs)
+    def peer_connect(self, *, services=P2P_SERVICES, send_version, **kwargs):
+        create_conn = super().peer_connect(**kwargs)
 
         if send_version:
             self.peer_connect_send_version(services)
@@ -456,7 +456,8 @@ class P2PInterface(P2PConnection):
         self.send_message(msg_verack())
         self.nServices = message.nServices
         self.relay = message.relay
-        self.send_message(msg_getaddr())
+        if self.p2p_connected_to_node:
+            self.send_message(msg_getaddr())
 
     # Connection helper methods
 

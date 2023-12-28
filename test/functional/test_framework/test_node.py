@@ -67,7 +67,7 @@ class TestNode():
     To make things easier for the test writer, any unrecognised messages will
     be dispatched to the RPC connection."""
 
-    def __init__(self, i, datadir_path, *, chain, rpchost, timewait, timeout_factor, bitcoind, bitcoin_cli, coverage_dir, cwd, extra_conf=None, extra_args=None, use_cli=False, start_perf=False, use_valgrind=False, version=None, descriptors=False):
+    def __init__(self, i, datadir_path, *, chain, rpchost, timewait, timeout_factor, bitcoind, bitcoin_cli, coverage_dir, cwd, extra_conf=None, extra_args=None, use_cli=False, start_perf=False, use_valgrind=False, version=None, descriptors=False, v2transport=False):
         """
         Kwargs:
             start_perf (bool): If True, begin profiling the node with `perf` as soon as
@@ -125,6 +125,12 @@ class TestNode():
             self.args.append("-logsourcelocations")
         if self.version_is_at_least(239000):
             self.args.append("-loglevel=trace")
+
+        # Default behavior from global -v2transport flag is added to args to persist it over restarts.
+        # May be overwritten in individual tests, using extra_args.
+        self.default_to_v2 = v2transport
+        if self.default_to_v2:
+            self.args.append("-v2transport=1")
 
         self.cli = TestNodeCLI(bitcoin_cli, self.datadir_path)
         self.use_cli = use_cli
@@ -198,6 +204,8 @@ class TestNode():
         if extra_args is None:
             extra_args = self.extra_args
 
+        self.use_v2transport = "-v2transport=1" in extra_args or (self.default_to_v2 and "-v2transport=0" not in extra_args)
+
         # Add a new stdout and stderr file each time bitcoind is started
         if stderr is None:
             stderr = tempfile.NamedTemporaryFile(dir=self.stderr_dir, delete=False)
@@ -252,7 +260,7 @@ class TestNode():
                 if self.version_is_at_least(190000):
                     # getmempoolinfo.loaded is available since commit
                     # bb8ae2c (version 0.19.0)
-                    wait_until_helper_internal(lambda: rpc.getmempoolinfo()['loaded'], timeout_factor=self.timeout_factor)
+                    self.wait_until(lambda: rpc.getmempoolinfo()['loaded'])
                     # Wait for the node to finish reindex, block import, and
                     # loading the mempool. Usually importing happens fast or
                     # even "immediate" when the node is started. However, there
@@ -406,7 +414,7 @@ class TestNode():
 
     def wait_until_stopped(self, *, timeout=BITCOIND_PROC_WAIT_TIMEOUT, expect_error=False, **kwargs):
         expected_ret_code = 1 if expect_error else 0  # Whether node shutdown return EXIT_FAILURE or EXIT_SUCCESS
-        wait_until_helper_internal(lambda: self.is_node_stopped(expected_ret_code=expected_ret_code, **kwargs), timeout=timeout, timeout_factor=self.timeout_factor)
+        self.wait_until(lambda: self.is_node_stopped(expected_ret_code=expected_ret_code, **kwargs), timeout=timeout)
 
     def replace_in_config(self, replacements):
         """
@@ -510,6 +518,23 @@ class TestNode():
         self._raise_assertion_error(
             'Expected messages "{}" does not partially match log:\n\n{}\n\n'.format(
                 str(expected_msgs), print_log))
+
+    @contextlib.contextmanager
+    def wait_for_new_peer(self, timeout=5):
+        """
+        Wait until the node is connected to at least one new peer. We detect this
+        by watching for an increased highest peer id, using the `getpeerinfo` RPC call.
+        Note that the simpler approach of only accounting for the number of peers
+        suffers from race conditions, as disconnects from unrelated previous peers
+        could happen anytime in-between.
+        """
+        def get_highest_peer_id():
+            peer_info = self.getpeerinfo()
+            return peer_info[-1]["id"] if peer_info else -1
+
+        initial_peer_id = get_highest_peer_id()
+        yield
+        self.wait_until(lambda: get_highest_peer_id() > initial_peer_id, timeout=timeout)
 
     @contextlib.contextmanager
     def profile_with_perf(self, profile_name: str):
@@ -634,7 +659,7 @@ class TestNode():
                     assert_msg += "with expected error " + expected_msg
                 self._raise_assertion_error(assert_msg)
 
-    def add_p2p_connection(self, p2p_conn, *, wait_for_verack=True, **kwargs):
+    def add_p2p_connection(self, p2p_conn, *, wait_for_verack=True, send_version=True, **kwargs):
         """Add an inbound p2p connection to the node.
 
         This method adds the p2p connection to the self.p2ps list and also
@@ -644,9 +669,12 @@ class TestNode():
         if 'dstaddr' not in kwargs:
             kwargs['dstaddr'] = '127.0.0.1'
 
-        p2p_conn.peer_connect(**kwargs, net=self.chain, timeout_factor=self.timeout_factor)()
+        p2p_conn.p2p_connected_to_node = True
+        p2p_conn.peer_connect(**kwargs, send_version=send_version, net=self.chain, timeout_factor=self.timeout_factor)()
         self.p2ps.append(p2p_conn)
         p2p_conn.wait_until(lambda: p2p_conn.is_connected, check_connected=False)
+        if send_version:
+            p2p_conn.wait_until(lambda: not p2p_conn.on_connection_send_msg)
         if wait_for_verack:
             # Wait for the node to send us the version and verack
             p2p_conn.wait_for_verack()
@@ -689,6 +717,7 @@ class TestNode():
             self.log.debug("Connecting to %s:%d %s" % (address, port, connection_type))
             self.addconnection('%s:%d' % (address, port), connection_type)
 
+        p2p_conn.p2p_connected_to_node = False
         p2p_conn.peer_accept_connection(connect_cb=addconnection_callback, connect_id=p2p_idx + 1, net=self.chain, timeout_factor=self.timeout_factor, **kwargs)()
 
         if connection_type == "feeler":
@@ -699,6 +728,7 @@ class TestNode():
             p2p_conn.wait_for_connect()
             self.p2ps.append(p2p_conn)
 
+            p2p_conn.wait_until(lambda: not p2p_conn.on_connection_send_msg)
             if wait_for_verack:
                 p2p_conn.wait_for_verack()
                 p2p_conn.sync_with_ping()
@@ -716,7 +746,7 @@ class TestNode():
             p.peer_disconnect()
         del self.p2ps[:]
 
-        wait_until_helper_internal(lambda: self.num_test_p2p_connections() == 0, timeout_factor=self.timeout_factor)
+        self.wait_until(lambda: self.num_test_p2p_connections() == 0)
 
     def bumpmocktime(self, seconds):
         """Fast forward using setmocktime to self.mocktime + seconds. Requires setmocktime to have
@@ -724,6 +754,9 @@ class TestNode():
         assert self.mocktime
         self.mocktime += seconds
         self.setmocktime(self.mocktime)
+
+    def wait_until(self, test_function, timeout=60):
+        return wait_until_helper_internal(test_function, timeout=timeout, timeout_factor=self.timeout_factor)
 
 
 class TestNodeCLIAttr:
@@ -777,15 +810,15 @@ class TestNodeCLI():
                 results.append(dict(error=e))
         return results
 
-    def send_cli(self, command=None, *args, **kwargs):
+    def send_cli(self, clicommand=None, *args, **kwargs):
         """Run bitcoin-cli command. Deserializes returned string as python object."""
         pos_args = [arg_to_cli(arg) for arg in args]
         named_args = [str(key) + "=" + arg_to_cli(value) for (key, value) in kwargs.items()]
         p_args = [self.binary, f"-datadir={self.datadir}"] + self.options
         if named_args:
             p_args += ["-named"]
-        if command is not None:
-            p_args += [command]
+        if clicommand is not None:
+            p_args += [clicommand]
         p_args += pos_args + named_args
         self.log.debug("Running bitcoin-cli {}".format(p_args[2:]))
         process = subprocess.Popen(p_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

@@ -40,7 +40,7 @@ void initialize_tx_pool()
     g_setup = testing_setup.get();
 
     for (int i = 0; i < 2 * COINBASE_MATURITY; ++i) {
-        COutPoint prevout{MineBlock(g_setup->m_node, P2WSH_OP_TRUE)};
+        COutPoint prevout{MineBlock(g_setup->m_node, P2WSH_EMPTY)};
         if (i < COINBASE_MATURITY) {
             // Remember the txids to avoid expensive disk access later on
             g_outpoints_coinbase_init_mature.push_back(prevout);
@@ -55,13 +55,13 @@ struct OutpointsUpdater final : public CValidationInterface {
     explicit OutpointsUpdater(std::set<COutPoint>& r)
         : m_mempool_outpoints{r} {}
 
-    void TransactionAddedToMempool(const CTransactionRef& tx, uint64_t /* mempool_sequence */) override
+    void TransactionAddedToMempool(const NewMempoolTransactionInfo& tx, uint64_t /* mempool_sequence */) override
     {
         // for coins spent we always want to be able to rbf so they're not removed
 
         // outputs from this tx can now be spent
-        for (uint32_t index{0}; index < tx->vout.size(); ++index) {
-            m_mempool_outpoints.insert(COutPoint{tx->GetHash(), index});
+        for (uint32_t index{0}; index < tx.info.m_tx->vout.size(); ++index) {
+            m_mempool_outpoints.insert(COutPoint{tx.info.m_tx->GetHash(), index});
         }
     }
 
@@ -85,10 +85,10 @@ struct TransactionsDelta final : public CValidationInterface {
     explicit TransactionsDelta(std::set<CTransactionRef>& a)
         : m_added{a} {}
 
-    void TransactionAddedToMempool(const CTransactionRef& tx, uint64_t /* mempool_sequence */) override
+    void TransactionAddedToMempool(const NewMempoolTransactionInfo& tx, uint64_t /* mempool_sequence */) override
     {
         // Transactions may be entered and booted any number of times
-        m_added.insert(tx);
+        m_added.insert(tx.info.m_tx);
     }
 
     void TransactionRemovedFromMempool(const CTransactionRef& tx, MemPoolRemovalReason reason, uint64_t /* mempool_sequence */) override
@@ -121,7 +121,6 @@ CTxMemPool MakeMempool(FuzzedDataProvider& fuzzed_data_provider, const NodeConte
     mempool_opts.expiry = std::chrono::hours{fuzzed_data_provider.ConsumeIntegralInRange<unsigned>(0, 999)};
     nBytesPerSigOp = fuzzed_data_provider.ConsumeIntegralInRange<unsigned>(1, 999);
 
-    mempool_opts.estimator = nullptr;
     mempool_opts.check_ratio = 1;
     mempool_opts.require_standard = fuzzed_data_provider.ConsumeBool();
 
@@ -195,7 +194,8 @@ FUZZ_TARGET(tx_package_eval, .init = initialize_tx_pool)
                     // Create input
                     const auto sequence = ConsumeSequence(fuzzed_data_provider);
                     const auto script_sig = CScript{};
-                    const auto script_wit_stack = std::vector<std::vector<uint8_t>>{WITNESS_STACK_ELEM_OP_TRUE};
+                    const auto script_wit_stack = fuzzed_data_provider.ConsumeBool() ? P2WSH_EMPTY_TRUE_STACK : P2WSH_EMPTY_TWO_STACK;
+
                     CTxIn in;
                     in.prevout = outpoint;
                     in.nSequence = sequence;
@@ -204,17 +204,30 @@ FUZZ_TARGET(tx_package_eval, .init = initialize_tx_pool)
 
                     tx_mut.vin.push_back(in);
                 }
+
+                // Duplicate an input
+                bool dup_input = fuzzed_data_provider.ConsumeBool();
+                if (dup_input) {
+                    tx_mut.vin.push_back(tx_mut.vin.back());
+                }
+
+                // Refer to a non-existant input
+                if (fuzzed_data_provider.ConsumeBool()) {
+                    tx_mut.vin.emplace_back();
+                }
+
                 const auto amount_fee = fuzzed_data_provider.ConsumeIntegralInRange<CAmount>(0, amount_in);
                 const auto amount_out = (amount_in - amount_fee) / num_out;
                 for (int i = 0; i < num_out; ++i) {
-                    tx_mut.vout.emplace_back(amount_out, P2WSH_OP_TRUE);
+                    tx_mut.vout.emplace_back(amount_out, P2WSH_EMPTY);
                 }
                 // TODO vary transaction sizes to catch size-related issues
                 auto tx = MakeTransactionRef(tx_mut);
                 // Restore previously removed outpoints, except in-package outpoints
                 if (!last_tx) {
                     for (const auto& in : tx->vin) {
-                        Assert(outpoints.insert(in.prevout).second);
+                        // It's a fake input, or a new input, or a duplicate
+                        Assert(in == CTxIn() || outpoints.insert(in.prevout).second || dup_input);
                     }
                     // Cache the in-package outpoints being made
                     for (size_t i = 0; i < tx->vout.size(); ++i) {
@@ -241,7 +254,7 @@ FUZZ_TARGET(tx_package_eval, .init = initialize_tx_pool)
                                    txs.back()->GetHash() :
                                    PickValue(fuzzed_data_provider, mempool_outpoints).hash;
             const auto delta = fuzzed_data_provider.ConsumeIntegralInRange<CAmount>(-50 * COIN, +50 * COIN);
-            tx_pool.PrioritiseTransaction(txid, delta);
+            tx_pool.PrioritiseTransaction(txid.ToUint256(), delta);
         }
 
         // Remember all added transactions
@@ -257,15 +270,6 @@ FUZZ_TARGET(tx_package_eval, .init = initialize_tx_pool)
 
         const auto result_package = WITH_LOCK(::cs_main,
                                     return ProcessNewPackage(chainstate, tx_pool, txs, /*test_accept=*/single_submit));
-        // If something went wrong due to a package-specific policy, it might not return a
-        // validation result for the transaction.
-        if (result_package.m_state.GetResult() != PackageValidationResult::PCKG_POLICY) {
-            auto it = result_package.m_tx_results.find(txs.back()->GetWitnessHash());
-            Assert(it != result_package.m_tx_results.end());
-            Assert(it->second.m_result_type == MempoolAcceptResult::ResultType::VALID ||
-                   it->second.m_result_type == MempoolAcceptResult::ResultType::INVALID ||
-                   it->second.m_result_type == MempoolAcceptResult::ResultType::MEMPOOL_ENTRY);
-        }
 
         const auto res = WITH_LOCK(::cs_main, return AcceptToMemoryPool(chainstate, txs.back(), GetTime(), bypass_limits, /*test_accept=*/!single_submit));
         const bool accepted = res.m_result_type == MempoolAcceptResult::ResultType::VALID;
@@ -281,6 +285,12 @@ FUZZ_TARGET(tx_package_eval, .init = initialize_tx_pool)
                 Assert(added.size() == 1);
                 Assert(txs.back() == *added.begin());
             }
+        } else if (result_package.m_state.GetResult() != PackageValidationResult::PCKG_POLICY) {
+            // We don't know anything about the validity since transactions were randomly generated, so
+            // just use result_package.m_state here. This makes the expect_valid check meaningless, but
+            // we can still verify that the contents of m_tx_results are consistent with m_state.
+            const bool expect_valid{result_package.m_state.IsValid()};
+            Assert(!CheckPackageMempoolAcceptResult(txs, result_package, expect_valid, nullptr));
         } else {
             // This is empty if it fails early checks, or "full" if transactions are looked at deeper
             Assert(result_package.m_tx_results.size() == txs.size() || result_package.m_tx_results.empty());

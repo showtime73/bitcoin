@@ -547,6 +547,34 @@ int GuiMain(int argc, char* argv[])
         return EXIT_FAILURE;
     }
 
+    // Error out when loose non-argument tokens are encountered on command line
+    // However, allow BIP-21 URIs only if no options follow
+    bool payment_server_token_seen = false;
+    for (int i = 1; i < argc; i++) {
+        QString arg(argv[i]);
+        bool invalid_token = !arg.startsWith("-");
+#ifdef ENABLE_WALLET
+        if (arg.startsWith(BITCOIN_IPC_PREFIX, Qt::CaseInsensitive)) {
+            invalid_token &= false;
+            payment_server_token_seen = true;
+        }
+#endif
+        if (payment_server_token_seen && arg.startsWith("-")) {
+            InitError(Untranslated(strprintf("Options ('%s') cannot follow a BIP-21 payment URI", argv[i])));
+            QMessageBox::critical(nullptr, PACKAGE_NAME,
+                                  // message cannot be translated because translations have not been initialized
+                                  QString::fromStdString("Options ('%1') cannot follow a BIP-21 payment URI").arg(QString::fromStdString(argv[i])));
+            return EXIT_FAILURE;
+        }
+        if (invalid_token) {
+            InitError(Untranslated(strprintf("Command line contains unexpected token '%s', see bitcoin-qt -h for a list of options.", argv[i])));
+            QMessageBox::critical(nullptr, PACKAGE_NAME,
+                                  // message cannot be translated because translations have not been initialized
+                                  QString::fromStdString("Command line contains unexpected token '%1', see bitcoin-qt -h for a list of options.").arg(QString::fromStdString(argv[i])));
+            return EXIT_FAILURE;
+        }
+    }
+
     // Now that the QApplication is setup and we have parsed our parameters, we can set the platform style
     app.setupPlatformStyle();
 
@@ -633,7 +661,10 @@ int GuiMain(int argc, char* argv[])
     app.installEventFilter(new GUIUtil::LabelOutOfFocusEventFilter(&app));
 #if defined(Q_OS_WIN)
     // Install global event filter for processing Windows session related Windows messages (WM_QUERYENDSESSION and WM_ENDSESSION)
-    qApp->installNativeEventFilter(new WinShutdownMonitor());
+    // Note: it is safe to call app.node() in the lambda below despite the fact
+    // that app.createNode() hasn't been called yet, because native events will
+    // not be processed until the Qt event loop is executed.
+    qApp->installNativeEventFilter(new WinShutdownMonitor([&app] { app.node().startShutdown(); }));
 #endif
     // Install qDebug() message handler to route to debug.log
     qInstallMessageHandler(DebugMessageHandler);

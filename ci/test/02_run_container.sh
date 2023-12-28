@@ -35,10 +35,13 @@ if [ -z "$DANGER_RUN_CI_ON_HOST" ]; then
 
     # Still prune everything in case the filtered pruning doesn't work, or if labels were not set
     # on a previous run. Belt and suspenders approach, should be fine to remove in the future.
+    # Prune images used by --external containers (e.g. build containers) when
+    # using podman.
     echo "Prune all dangling images"
-    docker image prune --force
+    podman image prune --force --external
   fi
   echo "Prune all dangling $CI_IMAGE_LABEL images"
+  # When detecting podman-docker, `--external` should be added.
   docker image prune --force --filter "label=$CI_IMAGE_LABEL"
 
   # shellcheck disable=SC2086
@@ -61,6 +64,11 @@ else
   mkdir -p "${PREVIOUS_RELEASES_DIR}"
 fi
 
+if [ "$CI_OS_NAME" == "macos" ]; then
+  IN_GETOPT_BIN="$(brew --prefix gnu-getopt)/bin/getopt"
+  export IN_GETOPT_BIN
+fi
+
 CI_EXEC () {
   $CI_EXEC_CMD_PREFIX bash -c "export PATH=${BINS_SCRATCH_DIR}:${BASE_ROOT_DIR}/ci/retry:\$PATH && cd \"${BASE_ROOT_DIR}\" && $*"
 }
@@ -76,7 +84,7 @@ CI_EXEC git config --global --add safe.directory \"*\"
 
 CI_EXEC mkdir -p "${BINS_SCRATCH_DIR}"
 
-CI_EXEC "${BASE_ROOT_DIR}/ci/test/06_script_b.sh"
+CI_EXEC "${BASE_ROOT_DIR}/ci/test/03_test_script.sh"
 
 if [ -z "$DANGER_RUN_CI_ON_HOST" ]; then
   echo "Stop and remove CI container by ID"

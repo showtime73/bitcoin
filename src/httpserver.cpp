@@ -15,9 +15,9 @@
 #include <netbase.h>
 #include <node/interface_ui.h>
 #include <rpc/protocol.h> // For HTTP status codes
-#include <shutdown.h>
 #include <sync.h>
 #include <util/check.h>
+#include <util/signalinterrupt.h>
 #include <util/strencodings.h>
 #include <util/threadnames.h>
 #include <util/translation.h>
@@ -224,8 +224,7 @@ static bool InitHTTPAllowList()
     rpc_allow_subnets.emplace_back(LookupHost("127.0.0.1", false).value(), 8);  // always allow IPv4 local subnet
     rpc_allow_subnets.emplace_back(LookupHost("::1", false).value());  // always allow IPv6 localhost
     for (const std::string& strAllow : gArgs.GetArgs("-rpcallowip")) {
-        CSubNet subnet;
-        LookupSubNet(strAllow, subnet);
+        const CSubNet subnet{LookupSubNet(strAllow)};
         if (!subnet.IsValid()) {
             uiInterface.ThreadSafeMessageBox(
                 strprintf(Untranslated("Invalid -rpcallowip subnet specification: %s. Valid are a single IP (e.g. 1.2.3.4), a network/netmask (e.g. 1.2.3.4/255.255.255.0) or a network/CIDR (e.g. 1.2.3.4/24)."), strAllow),
@@ -285,7 +284,7 @@ static void http_request_cb(struct evhttp_request* req, void* arg)
             }
         }
     }
-    std::unique_ptr<HTTPRequest> hreq(new HTTPRequest(req));
+    auto hreq{std::make_unique<HTTPRequest>(req, *static_cast<const util::SignalInterrupt*>(arg))};
 
     // Early address-based allow check
     if (!ClientAllowed(hreq->GetPeer())) {
@@ -426,7 +425,7 @@ static void libevent_log_cb(int severity, const char *msg)
     LogPrintLevel(BCLog::LIBEVENT, level, "%s\n", msg);
 }
 
-bool InitHTTPServer()
+bool InitHTTPServer(const util::SignalInterrupt& interrupt)
 {
     if (!InitHTTPAllowList())
         return false;
@@ -455,7 +454,7 @@ bool InitHTTPServer()
     evhttp_set_timeout(http, gArgs.GetIntArg("-rpcservertimeout", DEFAULT_HTTP_SERVER_TIMEOUT));
     evhttp_set_max_headers_size(http, MAX_HEADERS_SIZE);
     evhttp_set_max_body_size(http, MAX_SIZE);
-    evhttp_set_gencb(http, http_request_cb, nullptr);
+    evhttp_set_gencb(http, http_request_cb, (void*)&interrupt);
 
     if (!HTTPBindAddresses(http)) {
         LogPrintf("Unable to bind any endpoint for RPC server\n");
@@ -580,7 +579,8 @@ void HTTPEvent::trigger(struct timeval* tv)
     else
         evtimer_add(ev, tv); // trigger after timeval passed
 }
-HTTPRequest::HTTPRequest(struct evhttp_request* _req, bool _replySent) : req(_req), replySent(_replySent)
+HTTPRequest::HTTPRequest(struct evhttp_request* _req, const util::SignalInterrupt& interrupt, bool _replySent)
+    : req(_req), m_interrupt(interrupt), replySent(_replySent)
 {
 }
 
@@ -640,7 +640,7 @@ void HTTPRequest::WriteHeader(const std::string& hdr, const std::string& value)
 void HTTPRequest::WriteReply(int nStatus, const std::string& strReply)
 {
     assert(!replySent && req);
-    if (ShutdownRequested()) {
+    if (m_interrupt) {
         WriteHeader("Connection", "close");
     }
     // Send event to main http thread to send reply message

@@ -10,7 +10,6 @@ This file is modified from python-bitcoinlib.
 from collections import namedtuple
 import struct
 import unittest
-from typing import List, Dict
 
 from .key import TaggedHash, tweak_add_pubkey, compute_xonly_pubkey
 
@@ -24,7 +23,7 @@ from .messages import (
     uint256_from_str,
 )
 
-from .ripemd160 import ripemd160
+from .crypto.ripemd160 import ripemd160
 
 MAX_SCRIPT_ELEMENT_SIZE = 520
 MAX_PUBKEYS_PER_MULTI_A = 999
@@ -110,8 +109,8 @@ class CScriptOp(int):
             _opcode_instances.append(super().__new__(cls, n))
             return _opcode_instances[n]
 
-OPCODE_NAMES: Dict[CScriptOp, str] = {}
-_opcode_instances: List[CScriptOp] = []
+OPCODE_NAMES: dict[CScriptOp, str] = {}
+_opcode_instances: list[CScriptOp] = []
 
 # Populate opcode instance table
 for n in range(0xff + 1):

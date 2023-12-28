@@ -12,6 +12,7 @@
 #include <netaddress.h>
 #include <netbase.h>
 #include <random.h>
+#include <sync.h>
 #include <tinyformat.h>
 #include <util/fs.h>
 #include <util/readwritefile.h>
@@ -153,27 +154,59 @@ bool Session::Listen(Connection& conn)
 
 bool Session::Accept(Connection& conn)
 {
-    try {
-        while (!*m_interrupt) {
-            Sock::Event occurred;
-            if (!conn.sock->Wait(MAX_WAIT_FOR_IO, Sock::RECV, &occurred)) {
-                throw std::runtime_error("wait on socket failed");
-            }
+    AssertLockNotHeld(m_mutex);
 
-            if (occurred == 0) {
-                // Timeout, no incoming connections or errors within MAX_WAIT_FOR_IO.
-                continue;
-            }
+    std::string errmsg;
+    bool disconnect{false};
 
-            const std::string& peer_dest =
-                conn.sock->RecvUntilTerminator('\n', MAX_WAIT_FOR_IO, *m_interrupt, MAX_MSG_SIZE);
-
-            conn.peer = CService(DestB64ToAddr(peer_dest), I2P_SAM31_PORT);
-
-            return true;
+    while (!*m_interrupt) {
+        Sock::Event occurred;
+        if (!conn.sock->Wait(MAX_WAIT_FOR_IO, Sock::RECV, &occurred)) {
+            errmsg = "wait on socket failed";
+            break;
         }
-    } catch (const std::runtime_error& e) {
-        Log("Error accepting: %s", e.what());
+
+        if (occurred == 0) {
+            // Timeout, no incoming connections or errors within MAX_WAIT_FOR_IO.
+            continue;
+        }
+
+        std::string peer_dest;
+        try {
+            peer_dest = conn.sock->RecvUntilTerminator('\n', MAX_WAIT_FOR_IO, *m_interrupt, MAX_MSG_SIZE);
+        } catch (const std::runtime_error& e) {
+            errmsg = e.what();
+            break;
+        }
+
+        CNetAddr peer_addr;
+        try {
+            peer_addr = DestB64ToAddr(peer_dest);
+        } catch (const std::runtime_error& e) {
+            // The I2P router is expected to send the Base64 of the connecting peer,
+            // but it may happen that something like this is sent instead:
+            // STREAM STATUS RESULT=I2P_ERROR MESSAGE="Session was closed"
+            // In that case consider the session damaged and close it right away,
+            // even if the control socket is alive.
+            if (peer_dest.find("RESULT=I2P_ERROR") != std::string::npos) {
+                errmsg = strprintf("unexpected reply that hints the session is unusable: %s", peer_dest);
+                disconnect = true;
+            } else {
+                errmsg = e.what();
+            }
+            break;
+        }
+
+        conn.peer = CService(peer_addr, I2P_SAM31_PORT);
+
+        return true;
+    }
+
+    Log("Error accepting%s: %s", disconnect ? " (will close the session)" : "", errmsg);
+    if (disconnect) {
+        LOCK(m_mutex);
+        Disconnect();
+    } else {
         CheckControlSock();
     }
     return false;
@@ -351,10 +384,25 @@ Binary Session::MyDestination() const
     static constexpr size_t CERT_LEN_POS = 385;
 
     uint16_t cert_len;
+
+    if (m_private_key.size() < CERT_LEN_POS + sizeof(cert_len)) {
+        throw std::runtime_error(strprintf("The private key is too short (%d < %d)",
+                                           m_private_key.size(),
+                                           CERT_LEN_POS + sizeof(cert_len)));
+    }
+
     memcpy(&cert_len, &m_private_key.at(CERT_LEN_POS), sizeof(cert_len));
     cert_len = be16toh(cert_len);
 
     const size_t dest_len = DEST_LEN_BASE + cert_len;
+
+    if (dest_len > m_private_key.size()) {
+        throw std::runtime_error(strprintf("Certificate length (%d) designates that the private key should "
+                                           "be %d bytes, but it is only %d bytes",
+                                           cert_len,
+                                           dest_len,
+                                           m_private_key.size()));
+    }
 
     return Binary{m_private_key.begin(), m_private_key.begin() + dest_len};
 }

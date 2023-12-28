@@ -31,14 +31,8 @@ elif [ "$CI_OS_NAME" != "macos" ]; then
 fi
 
 if [ -n "$PIP_PACKAGES" ]; then
-  if [ "$CI_OS_NAME" == "macos" ]; then
-    sudo -H pip3 install --upgrade pip
-    # shellcheck disable=SC2086
-    IN_GETOPT_BIN="$(brew --prefix gnu-getopt)/bin/getopt" ${CI_RETRY_EXE} pip3 install --user $PIP_PACKAGES
-  else
-    # shellcheck disable=SC2086
-    ${CI_RETRY_EXE} pip3 install --user $PIP_PACKAGES
-  fi
+  # shellcheck disable=SC2086
+  ${CI_RETRY_EXE} pip3 install --user $PIP_PACKAGES
 fi
 
 if [[ ${USE_MEMORY_SANITIZER} == "true" ]]; then
@@ -73,8 +67,7 @@ if [[ ${USE_MEMORY_SANITIZER} == "true" ]]; then
 fi
 
 if [[ "${RUN_TIDY}" == "true" ]]; then
-  ${CI_RETRY_EXE} git clone https://github.com/include-what-you-use/include-what-you-use -b master /include-what-you-use
-  git -C /include-what-you-use checkout a138eaac254e5a472464e31d5ec418fe6e6f1fc7
+  ${CI_RETRY_EXE} git clone --depth=1 https://github.com/include-what-you-use/include-what-you-use -b clang_"${TIDY_LLVM_V}" /include-what-you-use
   cmake -B /iwyu-build/ -G 'Unix Makefiles' -DCMAKE_PREFIX_PATH=/usr/lib/llvm-"${TIDY_LLVM_V}" -S /include-what-you-use
   make -C /iwyu-build/ install "-j$( nproc )"  # Use nproc, because MAKEJOBS is the default in docker image builds
 fi

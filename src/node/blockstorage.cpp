@@ -4,23 +4,32 @@
 
 #include <node/blockstorage.h>
 
+#include <arith_uint256.h>
 #include <chain.h>
-#include <clientversion.h>
+#include <consensus/params.h>
 #include <consensus/validation.h>
 #include <dbwrapper.h>
 #include <flatfile.h>
 #include <hash.h>
-#include <kernel/chain.h>
+#include <kernel/blockmanager_opts.h>
 #include <kernel/chainparams.h>
 #include <kernel/messagestartchars.h>
+#include <kernel/notifications_interface.h>
 #include <logging.h>
 #include <pow.h>
+#include <primitives/block.h>
+#include <primitives/transaction.h>
 #include <reverse_iterator.h>
+#include <serialize.h>
 #include <signet.h>
+#include <span.h>
 #include <streams.h>
 #include <sync.h>
+#include <tinyformat.h>
+#include <uint256.h>
 #include <undo.h>
 #include <util/batchpriority.h>
+#include <util/check.h>
 #include <util/fs.h>
 #include <util/signalinterrupt.h>
 #include <util/strencodings.h>
@@ -254,7 +263,7 @@ void BlockManager::PruneOneBlockFile(const int fileNumber)
         }
     }
 
-    m_blockfile_info[fileNumber].SetNull();
+    m_blockfile_info.at(fileNumber) = CBlockFileInfo{};
     m_dirty_fileinfo.insert(fileNumber);
 }
 
@@ -387,7 +396,12 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
     }
 
     if (snapshot_blockhash) {
-        const AssumeutxoData au_data = *Assert(GetParams().AssumeutxoForBlockhash(*snapshot_blockhash));
+        const std::optional<AssumeutxoData> maybe_au_data = GetParams().AssumeutxoForBlockhash(*snapshot_blockhash);
+        if (!maybe_au_data) {
+            m_opts.notifications.fatalError(strprintf("Assumeutxo data not found for the given blockhash '%s'.", snapshot_blockhash->ToString()));
+            return false;
+        }
+        const AssumeutxoData& au_data = *Assert(maybe_au_data);
         m_snapshot_height = au_data.height;
         CBlockIndex* base{LookupBlockIndex(*snapshot_blockhash)};
 
@@ -568,10 +582,10 @@ const CBlockIndex* BlockManager::GetLastCheckpoint(const CCheckpointData& data)
     return nullptr;
 }
 
-bool BlockManager::IsBlockPruned(const CBlockIndex* pblockindex)
+bool BlockManager::IsBlockPruned(const CBlockIndex& block)
 {
     AssertLockHeld(::cs_main);
-    return (m_have_pruned && !(pblockindex->nStatus & BLOCK_HAVE_DATA) && pblockindex->nTx > 0);
+    return m_have_pruned && !(block.nStatus & BLOCK_HAVE_DATA) && (block.nTx > 0);
 }
 
 const CBlockIndex* BlockManager::GetFirstStoredBlock(const CBlockIndex& upper_block, const CBlockIndex* lower_block)
@@ -651,13 +665,13 @@ CBlockFileInfo* BlockManager::GetBlockFileInfo(size_t n)
 bool BlockManager::UndoWriteToDisk(const CBlockUndo& blockundo, FlatFilePos& pos, const uint256& hashBlock) const
 {
     // Open history file to append
-    CAutoFile fileout{OpenUndoFile(pos)};
+    AutoFile fileout{OpenUndoFile(pos)};
     if (fileout.IsNull()) {
         return error("%s: OpenUndoFile failed", __func__);
     }
 
     // Write index header
-    unsigned int nSize = GetSerializeSize(blockundo, CLIENT_VERSION);
+    unsigned int nSize = GetSerializeSize(blockundo);
     fileout << GetParams().MessageStart() << nSize;
 
     // Write undo data
@@ -686,7 +700,7 @@ bool BlockManager::UndoReadFromDisk(CBlockUndo& blockundo, const CBlockIndex& in
     }
 
     // Open history file to read
-    CAutoFile filein{OpenUndoFile(pos, true)};
+    AutoFile filein{OpenUndoFile(pos, true)};
     if (filein.IsNull()) {
         return error("%s: OpenUndoFile failed", __func__);
     }
@@ -805,15 +819,15 @@ FlatFileSeq BlockManager::UndoFileSeq() const
     return FlatFileSeq(m_opts.blocks_dir, "rev", UNDOFILE_CHUNK_SIZE);
 }
 
-CAutoFile BlockManager::OpenBlockFile(const FlatFilePos& pos, bool fReadOnly) const
+AutoFile BlockManager::OpenBlockFile(const FlatFilePos& pos, bool fReadOnly) const
 {
-    return CAutoFile{BlockFileSeq().Open(pos, fReadOnly), CLIENT_VERSION};
+    return AutoFile{BlockFileSeq().Open(pos, fReadOnly)};
 }
 
 /** Open an undo file (rev?????.dat) */
-CAutoFile BlockManager::OpenUndoFile(const FlatFilePos& pos, bool fReadOnly) const
+AutoFile BlockManager::OpenUndoFile(const FlatFilePos& pos, bool fReadOnly) const
 {
-    return CAutoFile{UndoFileSeq().Open(pos, fReadOnly), CLIENT_VERSION};
+    return AutoFile{UndoFileSeq().Open(pos, fReadOnly)};
 }
 
 fs::path BlockManager::GetBlockPosFilename(const FlatFilePos& pos) const
@@ -945,13 +959,13 @@ bool BlockManager::FindUndoPos(BlockValidationState& state, int nFile, FlatFileP
 bool BlockManager::WriteBlockToDisk(const CBlock& block, FlatFilePos& pos) const
 {
     // Open history file to append
-    CAutoFile fileout{OpenBlockFile(pos)};
+    AutoFile fileout{OpenBlockFile(pos)};
     if (fileout.IsNull()) {
         return error("WriteBlockToDisk: OpenBlockFile failed");
     }
 
     // Write index header
-    unsigned int nSize = GetSerializeSize(block, fileout.GetVersion());
+    unsigned int nSize = GetSerializeSize(TX_WITH_WITNESS(block));
     fileout << GetParams().MessageStart() << nSize;
 
     // Write block
@@ -960,7 +974,7 @@ bool BlockManager::WriteBlockToDisk(const CBlock& block, FlatFilePos& pos) const
         return error("WriteBlockToDisk: ftell failed");
     }
     pos.nPos = (unsigned int)fileOutPos;
-    fileout << block;
+    fileout << TX_WITH_WITNESS(block);
 
     return true;
 }
@@ -974,7 +988,7 @@ bool BlockManager::WriteUndoDataForBlock(const CBlockUndo& blockundo, BlockValid
     // Write undo information to disk
     if (block.GetUndoPos().IsNull()) {
         FlatFilePos _pos;
-        if (!FindUndoPos(state, block.nFile, _pos, ::GetSerializeSize(blockundo, CLIENT_VERSION) + 40)) {
+        if (!FindUndoPos(state, block.nFile, _pos, ::GetSerializeSize(blockundo) + 40)) {
             return error("ConnectBlock(): FindUndoPos failed");
         }
         if (!UndoWriteToDisk(blockundo, _pos, block.pprev->GetBlockHash())) {
@@ -1011,14 +1025,14 @@ bool BlockManager::ReadBlockFromDisk(CBlock& block, const FlatFilePos& pos) cons
     block.SetNull();
 
     // Open history file to read
-    CAutoFile filein{OpenBlockFile(pos, true)};
+    AutoFile filein{OpenBlockFile(pos, true)};
     if (filein.IsNull()) {
         return error("ReadBlockFromDisk: OpenBlockFile failed for %s", pos.ToString());
     }
 
     // Read block
     try {
-        filein >> block;
+        filein >> TX_WITH_WITNESS(block);
     } catch (const std::exception& e) {
         return error("%s: Deserialize or I/O error - %s at %s", __func__, e.what(), pos.ToString());
     }
@@ -1054,7 +1068,7 @@ bool BlockManager::ReadRawBlockFromDisk(std::vector<uint8_t>& block, const FlatF
 {
     FlatFilePos hpos = pos;
     hpos.nPos -= 8; // Seek back 8 bytes for meta header
-    CAutoFile filein{OpenBlockFile(hpos, true)};
+    AutoFile filein{OpenBlockFile(hpos, true)};
     if (filein.IsNull()) {
         return error("%s: OpenBlockFile failed for %s", __func__, pos.ToString());
     }
@@ -1087,7 +1101,7 @@ bool BlockManager::ReadRawBlockFromDisk(std::vector<uint8_t>& block, const FlatF
 
 FlatFilePos BlockManager::SaveBlockToDisk(const CBlock& block, int nHeight, const FlatFilePos* dbp)
 {
-    unsigned int nBlockSize = ::GetSerializeSize(block, CLIENT_VERSION);
+    unsigned int nBlockSize = ::GetSerializeSize(TX_WITH_WITNESS(block));
     FlatFilePos blockPos;
     const auto position_known {dbp != nullptr};
     if (position_known) {
@@ -1146,7 +1160,7 @@ void ImportBlocks(ChainstateManager& chainman, std::vector<fs::path> vImportFile
                 if (!fs::exists(chainman.m_blockman.GetBlockPosFilename(pos))) {
                     break; // No block files left to reindex
                 }
-                CAutoFile file{chainman.m_blockman.OpenBlockFile(pos, true)};
+                AutoFile file{chainman.m_blockman.OpenBlockFile(pos, true)};
                 if (file.IsNull()) {
                     break; // This error is logged in OpenBlockFile
                 }
@@ -1167,7 +1181,7 @@ void ImportBlocks(ChainstateManager& chainman, std::vector<fs::path> vImportFile
 
         // -loadblock=
         for (const fs::path& path : vImportFiles) {
-            CAutoFile file{fsbridge::fopen(path, "rb"), CLIENT_VERSION};
+            AutoFile file{fsbridge::fopen(path, "rb")};
             if (!file.IsNull()) {
                 LogPrintf("Importing blocks file %s...\n", fs::PathToString(path));
                 chainman.LoadExternalBlockFile(file);

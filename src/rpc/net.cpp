@@ -15,7 +15,9 @@
 #include <net_types.h> // For banmap_t
 #include <netbase.h>
 #include <node/context.h>
+#include <node/protocol_version.h>
 #include <policy/settings.h>
+#include <protocol.h>
 #include <rpc/blockchain.h>
 #include <rpc/protocol.h>
 #include <rpc/server_util.h>
@@ -28,7 +30,6 @@
 #include <util/time.h>
 #include <util/translation.h>
 #include <validation.h>
-#include <version.h>
 #include <warnings.h>
 
 #include <optional>
@@ -96,6 +97,18 @@ static RPCHelpMan ping()
     return UniValue::VNULL;
 },
     };
+}
+
+/** Returns, given services flags, a list of humanly readable (known) network services */
+static UniValue GetServicesNames(ServiceFlags services)
+{
+    UniValue servicesNames(UniValue::VARR);
+
+    for (const auto& flag : serviceFlagsToStr(services)) {
+        servicesNames.push_back(flag);
+    }
+
+    return servicesNames;
 }
 
 static RPCHelpMan getpeerinfo()
@@ -487,7 +500,7 @@ static RPCHelpMan getaddednodeinfo()
     NodeContext& node = EnsureAnyNodeContext(request.context);
     const CConnman& connman = EnsureConnman(node);
 
-    std::vector<AddedNodeInfo> vInfo = connman.GetAddedNodeInfo();
+    std::vector<AddedNodeInfo> vInfo = connman.GetAddedNodeInfo(/*include_connected=*/true);
 
     if (!request.params[0].isNull()) {
         bool found = false;
@@ -734,7 +747,7 @@ static RPCHelpMan setban()
         }
     }
     else
-        LookupSubNet(request.params[0].get_str(), subNet);
+        subNet = LookupSubNet(request.params[0].get_str());
 
     if (! (isSubnet ? subNet.IsValid() : netAddr.IsValid()) )
         throw JSONRPCError(RPC_CLIENT_INVALID_IP_OR_SUBNET, "Error: Invalid IP/Subnet");
