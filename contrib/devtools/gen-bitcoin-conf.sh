@@ -5,7 +5,7 @@
 
 export LC_ALL=C
 TOPDIR=${TOPDIR:-$(git rev-parse --show-toplevel)}
-BUILDDIR=${BUILDDIR:-$TOPDIR}
+BUILDDIR=${BUILDDIR:-$TOPDIR/build}
 BINDIR=${BINDIR:-$BUILDDIR/src}
 BITCOIND=${BITCOIND:-$BINDIR/bitcoind}
 SHARE_EXAMPLES_DIR=${SHARE_EXAMPLES_DIR:-$TOPDIR/share/examples}
@@ -72,8 +72,11 @@ cat >> "${EXAMPLE_CONF_FILE}" << 'EOF'
 # Options for mainnet
 [main]
 
-# Options for testnet
+# Options for testnet3
 [test]
+
+# Options for testnet4
+[testnet4]
 
 # Options for signet
 [signet]

@@ -5,11 +5,11 @@
 #ifndef BITCOIN_SPAN_H
 #define BITCOIN_SPAN_H
 
-#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <span>
 #include <type_traits>
+#include <utility>
 
 #ifdef DEBUG
 #define CONSTEXPR_IF_NOT_DEBUG
@@ -213,13 +213,6 @@ public:
          return Span<C>(m_data + m_size - count, count);
     }
 
-    friend constexpr bool operator==(const Span& a, const Span& b) noexcept { return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin()); }
-    friend constexpr bool operator!=(const Span& a, const Span& b) noexcept { return !(a == b); }
-    friend constexpr bool operator<(const Span& a, const Span& b) noexcept { return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end()); }
-    friend constexpr bool operator<=(const Span& a, const Span& b) noexcept { return !(b < a); }
-    friend constexpr bool operator>(const Span& a, const Span& b) noexcept { return (b < a); }
-    friend constexpr bool operator>=(const Span& a, const Span& b) noexcept { return !(a < b); }
-
     template <typename O> friend class Span;
 };
 
@@ -255,9 +248,8 @@ template <typename T>
 T& SpanPopBack(Span<T>& span)
 {
     size_t size = span.size();
-    ASSERT_IF_DEBUG(size > 0);
-    T& back = span[size - 1];
-    span = Span<T>(span.data(), size - 1);
+    T& back = span.back();
+    span = span.first(size - 1);
     return back;
 }
 
@@ -287,9 +279,11 @@ Span<std::byte> MakeWritableByteSpan(V&& v) noexcept
 // Helper functions to safely cast basic byte pointers to unsigned char pointers.
 inline unsigned char* UCharCast(char* c) { return reinterpret_cast<unsigned char*>(c); }
 inline unsigned char* UCharCast(unsigned char* c) { return c; }
+inline unsigned char* UCharCast(signed char* c) { return reinterpret_cast<unsigned char*>(c); }
 inline unsigned char* UCharCast(std::byte* c) { return reinterpret_cast<unsigned char*>(c); }
 inline const unsigned char* UCharCast(const char* c) { return reinterpret_cast<const unsigned char*>(c); }
 inline const unsigned char* UCharCast(const unsigned char* c) { return c; }
+inline const unsigned char* UCharCast(const signed char* c) { return reinterpret_cast<const unsigned char*>(c); }
 inline const unsigned char* UCharCast(const std::byte* c) { return reinterpret_cast<const unsigned char*>(c); }
 // Helper concept for the basic byte types.
 template <typename B>

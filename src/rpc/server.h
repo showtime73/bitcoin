@@ -16,15 +16,7 @@
 
 #include <univalue.h>
 
-static const unsigned int DEFAULT_RPC_SERIALIZE_VERSION = 1;
-
 class CRPCCommand;
-
-namespace RPCServer
-{
-    void OnStarted(std::function<void ()> slot);
-    void OnStopped(std::function<void ()> slot);
-}
 
 /** Query whether RPC is running */
 bool IsRPCRunning();
@@ -50,7 +42,7 @@ bool RPCIsInWarmup(std::string *outStatus);
 class RPCTimerBase
 {
 public:
-    virtual ~RPCTimerBase() {}
+    virtual ~RPCTimerBase() = default;
 };
 
 /**
@@ -59,7 +51,7 @@ public:
 class RPCTimerInterface
 {
 public:
-    virtual ~RPCTimerInterface() {}
+    virtual ~RPCTimerInterface() = default;
     /** Implementation name */
     virtual const char *Name() = 0;
     /** Factory function for timers.
@@ -181,16 +173,6 @@ extern CRPCTable tableRPC;
 void StartRPC();
 void InterruptRPC();
 void StopRPC();
-std::string JSONRPCExecBatch(const JSONRPCRequest& jreq, const UniValue& vReq);
-
-// Drop witness when serializing for RPC?
-bool RPCSerializationWithoutWitness();
-
-template<typename T>
-auto RPCTxSerParams(T&& t)
-{
-    if (RPCSerializationWithoutWitness()) return TX_NO_WITNESS(t);
-    return TX_WITH_WITNESS(t);
-}
+UniValue JSONRPCExec(const JSONRPCRequest& jreq, bool catch_errors);
 
 #endif // BITCOIN_RPC_SERVER_H

@@ -45,12 +45,14 @@ FUZZ_TARGET(policy_estimator, .init = initialize_policy_estimator)
                 }
                 const CTransaction tx{*mtx};
                 const CTxMemPoolEntry& entry = ConsumeTxMemPoolEntry(fuzzed_data_provider, tx);
+                const auto tx_submitted_in_package = fuzzed_data_provider.ConsumeBool();
+                const auto tx_has_mempool_parents = fuzzed_data_provider.ConsumeBool();
                 const auto tx_info = NewMempoolTransactionInfo(entry.GetSharedTx(), entry.GetFee(),
                                                                entry.GetTxSize(), entry.GetHeight(),
-                                                               /* m_from_disconnected_block */ false,
-                                                               /* m_submitted_in_package */ false,
-                                                               /* m_chainstate_is_current */ true,
-                                                               /* m_has_no_mempool_parents */ fuzzed_data_provider.ConsumeBool());
+                                                               /*mempool_limit_bypassed=*/false,
+                                                               tx_submitted_in_package,
+                                                               /*chainstate_is_current=*/true,
+                                                               tx_has_mempool_parents);
                 block_policy_estimator.processTransaction(tx_info);
                 if (fuzzed_data_provider.ConsumeBool()) {
                     (void)block_policy_estimator.removeTx(tx.GetHash());
@@ -83,9 +85,18 @@ FUZZ_TARGET(policy_estimator, .init = initialize_policy_estimator)
             });
         (void)block_policy_estimator.estimateFee(fuzzed_data_provider.ConsumeIntegral<int>());
         EstimationResult result;
-        (void)block_policy_estimator.estimateRawFee(fuzzed_data_provider.ConsumeIntegral<int>(), fuzzed_data_provider.ConsumeFloatingPoint<double>(), fuzzed_data_provider.PickValueInArray(ALL_FEE_ESTIMATE_HORIZONS), fuzzed_data_provider.ConsumeBool() ? &result : nullptr);
+        auto conf_target = fuzzed_data_provider.ConsumeIntegral<int>();
+        auto success_threshold = fuzzed_data_provider.ConsumeFloatingPoint<double>();
+        auto horizon = fuzzed_data_provider.PickValueInArray(ALL_FEE_ESTIMATE_HORIZONS);
+        auto* result_ptr = fuzzed_data_provider.ConsumeBool() ? &result : nullptr;
+        (void)block_policy_estimator.estimateRawFee(conf_target, success_threshold, horizon, result_ptr);
+
         FeeCalculation fee_calculation;
-        (void)block_policy_estimator.estimateSmartFee(fuzzed_data_provider.ConsumeIntegral<int>(), fuzzed_data_provider.ConsumeBool() ? &fee_calculation : nullptr, fuzzed_data_provider.ConsumeBool());
+        conf_target = fuzzed_data_provider.ConsumeIntegral<int>();
+        auto* fee_calc_ptr = fuzzed_data_provider.ConsumeBool() ? &fee_calculation : nullptr;
+        auto conservative = fuzzed_data_provider.ConsumeBool();
+        (void)block_policy_estimator.estimateSmartFee(conf_target, fee_calc_ptr, conservative);
+
         (void)block_policy_estimator.HighestTargetTracked(fuzzed_data_provider.PickValueInArray(ALL_FEE_ESTIMATE_HORIZONS));
     }
     {
