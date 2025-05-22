@@ -18,10 +18,10 @@ Otherwise, you may choose from one of the following options to install Guix:
    - Works on nearly all Linux distributions
    - Installs any release
    - Binary installation only, requires high level of trust
-3. Using fanquake's **Docker image** [↗︎ external instructions][install-fanquake-docker]
+3. Using fanquake's **container image** [↗︎ external instructions][install-fanquake-container]
    - Maintained by fanquake
    - Easy (automatically performs *some* setup)
-   - Works wherever Docker images work
+   - Works wherever container images work (Docker/Podman)
    - Installs any release
    - Binary installation only, requires high level of trust
 4. Using a **distribution-maintained package** [⤓ skip to section][install-distro-pkg]
@@ -57,7 +57,7 @@ Regardless of which installation option you chose, the changes to
 `/etc/profile.d` will not take effect until the next shell or desktop session,
 so you should log out and log back in.
 
-## Option 3: Using fanquake's Docker image
+## Option 3: Using fanquake's container image
 
 Please refer to fanquake's instructions
 [here](https://github.com/fanquake/core-review/tree/master/guix).
@@ -415,7 +415,7 @@ make it "what Guix intended", then read the next few subsections.
 
 This section definitely does not apply to you if you installed Guix using:
 1. The shell installer script
-2. fanquake's Docker image
+2. fanquake's container image
 3. Debian's `guix` package
 
 #### Background
@@ -456,7 +456,7 @@ Alternately, see `guix package --search-paths -p "$HOME/.guix-profile"'.
 
 However, this is somewhat tedious to do for both `guix pull` and `guix install`
 for each user on the system that wants to properly use `guix`. I recommend that
-you instead add an entry to `/etc/profile.d` instead. This is done by default
+you add an entry to `/etc/profile.d` instead. This is done by default
 when installing the Debian package later than 1.2.0-4 and when using the shell
 script installer.
 
@@ -766,7 +766,7 @@ Please see the following links for more details:
 
 [install-script]: #options-1-and-2-using-the-official-shell-installer-script-or-binary-tarball
 [install-bin-tarball]: #options-1-and-2-using-the-official-shell-installer-script-or-binary-tarball
-[install-fanquake-docker]: #option-3-using-fanquakes-docker-image
+[install-fanquake-container]: #option-3-using-fanquakes-container-image
 [install-distro-pkg]: #option-4-using-a-distribution-maintained-package
 [install-source]: #option-5-building-from-source
 

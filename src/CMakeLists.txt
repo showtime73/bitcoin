@@ -7,28 +7,22 @@ include(AddWindowsResources)
 configure_file(${PROJECT_SOURCE_DIR}/cmake/bitcoin-build-config.h.in bitcoin-build-config.h USE_SOURCE_PERMISSIONS @ONLY)
 include_directories(${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 
-add_custom_target(generate_build_info
-  BYPRODUCTS ${PROJECT_BINARY_DIR}/src/bitcoin-build-info.h
-  COMMAND ${CMAKE_COMMAND} -DBUILD_INFO_HEADER_PATH=${PROJECT_BINARY_DIR}/src/bitcoin-build-info.h -DSOURCE_DIR=${PROJECT_SOURCE_DIR} -P ${PROJECT_SOURCE_DIR}/cmake/script/GenerateBuildInfo.cmake
-  COMMENT "Generating bitcoin-build-info.h"
-  VERBATIM
-)
-add_library(bitcoin_clientversion STATIC EXCLUDE_FROM_ALL
-  clientversion.cpp
-)
-target_link_libraries(bitcoin_clientversion
-  PRIVATE
-    core_interface
-)
-add_dependencies(bitcoin_clientversion generate_build_info)
-
-add_subdirectory(crypto)
+#=============================
+# Subprojects
+#=============================
+# Subprojects include subdirectories that do or could have tests
+# and/or benchmark binaries, such as all subtrees and univalue.
+# These need to be included before CMAKE_*_OUTPUT_DIRECTORY variables
+# are set, so output locations of subproject tests and libraries are
+# not overridden.
+include(../cmake/crc32c.cmake)
+include(../cmake/leveldb.cmake)
+include(../cmake/minisketch.cmake)
 add_subdirectory(univalue)
-add_subdirectory(util)
-if(WITH_MULTIPROCESS)
-  add_subdirectory(ipc)
+if (ENABLE_IPC AND NOT WITH_EXTERNAL_LIBMULTIPROCESS)
+  include(../cmake/libmultiprocess.cmake)
+  add_libmultiprocess(ipc/libmultiprocess)
 endif()
-
 #=============================
 # secp256k1 subtree
 #=============================
@@ -77,6 +71,38 @@ set_target_properties(secp256k1 PROPERTIES
   EXCLUDE_FROM_ALL TRUE
 )
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Set top-level target output locations.
+if(NOT CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
+endif()
+if(NOT CMAKE_LIBRARY_OUTPUT_DIRECTORY)
+  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib)
+endif()
+if(NOT CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
+  set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib)
+endif()
+
+add_custom_target(generate_build_info
+  BYPRODUCTS ${PROJECT_BINARY_DIR}/src/bitcoin-build-info.h
+  COMMAND ${CMAKE_COMMAND} -DBUILD_INFO_HEADER_PATH=${PROJECT_BINARY_DIR}/src/bitcoin-build-info.h -DSOURCE_DIR=${PROJECT_SOURCE_DIR} -P ${PROJECT_SOURCE_DIR}/cmake/script/GenerateBuildInfo.cmake
+  COMMENT "Generating bitcoin-build-info.h"
+  VERBATIM
+)
+add_library(bitcoin_clientversion STATIC EXCLUDE_FROM_ALL
+  clientversion.cpp
+)
+target_link_libraries(bitcoin_clientversion
+  PRIVATE
+    core_interface
+)
+add_dependencies(bitcoin_clientversion generate_build_info)
+
+add_subdirectory(crypto)
+add_subdirectory(util)
+if(ENABLE_IPC)
+  add_subdirectory(ipc)
+endif()
 
 add_library(bitcoin_consensus STATIC EXCLUDE_FROM_ALL
   arith_uint256.cpp
@@ -180,6 +206,7 @@ if(ENABLE_WALLET)
       wallet/wallettool.cpp
     )
     add_windows_resources(bitcoin-wallet bitcoin-wallet-res.rc)
+    add_windows_application_manifest(bitcoin-wallet)
     target_link_libraries(bitcoin-wallet
       core_interface
       bitcoin_wallet
@@ -279,6 +306,7 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
   signet.cpp
   torcontrol.cpp
   txdb.cpp
+  txgraph.cpp
   txmempool.cpp
   txorphanage.cpp
   txrequest.cpp
@@ -312,6 +340,7 @@ if(BUILD_DAEMON)
     init/bitcoind.cpp
   )
   add_windows_resources(bitcoind bitcoind-res.rc)
+  add_windows_application_manifest(bitcoind)
   target_link_libraries(bitcoind
     core_interface
     bitcoin_node
@@ -319,7 +348,7 @@ if(BUILD_DAEMON)
   )
   install_binary_component(bitcoind HAS_MANPAGE)
 endif()
-if(WITH_MULTIPROCESS AND BUILD_DAEMON)
+if(ENABLE_IPC AND BUILD_DAEMON)
   add_executable(bitcoin-node
     bitcoind.cpp
     init/bitcoin-node.cpp
@@ -333,7 +362,7 @@ if(WITH_MULTIPROCESS AND BUILD_DAEMON)
   install_binary_component(bitcoin-node)
 endif()
 
-if(WITH_MULTIPROCESS AND BUILD_TESTS)
+if(ENABLE_IPC AND BUILD_TESTS)
     # bitcoin_ipc_test library target is defined here in src/CMakeLists.txt
     # instead of src/test/CMakeLists.txt so capnp files in src/test/ are able to
     # reference capnp files in src/ipc/capnp/ by relative path. The Cap'n Proto
@@ -365,6 +394,7 @@ target_link_libraries(bitcoin_cli
 if(BUILD_CLI)
   add_executable(bitcoin-cli bitcoin-cli.cpp)
   add_windows_resources(bitcoin-cli bitcoin-cli-res.rc)
+  add_windows_application_manifest(bitcoin-cli)
   target_link_libraries(bitcoin-cli
     core_interface
     bitcoin_cli
@@ -380,6 +410,7 @@ endif()
 if(BUILD_TX)
   add_executable(bitcoin-tx bitcoin-tx.cpp)
   add_windows_resources(bitcoin-tx bitcoin-tx-res.rc)
+  add_windows_application_manifest(bitcoin-tx)
   target_link_libraries(bitcoin-tx
     core_interface
     bitcoin_common
@@ -393,6 +424,7 @@ endif()
 if(BUILD_UTIL)
   add_executable(bitcoin-util bitcoin-util.cpp)
   add_windows_resources(bitcoin-util bitcoin-util-res.rc)
+  add_windows_application_manifest(bitcoin-util)
   target_link_libraries(bitcoin-util
     core_interface
     bitcoin_common
