@@ -10,7 +10,7 @@
 #include <QString>
 #include <functional>
 
-#include <windef.h> // for HWND
+#include <windows.h>
 
 #include <QAbstractNativeEventFilter>
 
@@ -20,7 +20,7 @@ public:
     WinShutdownMonitor(std::function<void()> shutdown_fn) : m_shutdown_fn{std::move(shutdown_fn)} {}
 
     /** Implements QAbstractNativeEventFilter interface for processing Windows messages */
-    bool nativeEventFilter(const QByteArray &eventType, void *pMessage, long *pnResult) override;
+    bool nativeEventFilter(const QByteArray &eventType, void *pMessage, qintptr *pnResult) override;
 
     /** Register the reason for blocking shutdown on Windows to allow clean client exit */
     static void registerShutdownBlockReason(const QString& strReason, const HWND& mainWinId);
