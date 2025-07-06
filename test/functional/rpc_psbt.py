@@ -72,7 +72,6 @@ class PSBTTest(BitcoinTestFramework):
         # whitelist peers to speed up tx relay / mempool sync
         for args in self.extra_args:
             args.append("-whitelist=noban@127.0.0.1")
-        self.supports_cli = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
@@ -83,7 +82,7 @@ class PSBTTest(BitcoinTestFramework):
         wallet = node.get_wallet_rpc(self.default_wallet_name)
         address = wallet.getnewaddress()
         wallet.sendtoaddress(address=address, amount=1.0)
-        self.generate(node, nblocks=1, sync_fun=lambda: self.sync_all(self.nodes[:2]))
+        self.generate(node, nblocks=1)
 
         utxos = wallet.listunspent(addresses=[address])
         psbt = wallet.createpsbt([{"txid": utxos[0]["txid"], "vout": utxos[0]["vout"]}], [{wallet.getnewaddress(): 0.9999}])
@@ -96,7 +95,7 @@ class PSBTTest(BitcoinTestFramework):
         signed_psbt_obj.g.map[PSBT_GLOBAL_UNSIGNED_TX] = bytes.fromhex(raw)
 
         # Check that the walletprocesspsbt call succeeds but also recognizes that the transaction is not complete
-        signed_psbt_incomplete = wallet.walletprocesspsbt(signed_psbt_obj.to_base64(), finalize=False)
+        signed_psbt_incomplete = wallet.walletprocesspsbt(psbt=signed_psbt_obj.to_base64(), finalize=False)
         assert signed_psbt_incomplete["complete"] is False
 
     def test_utxo_conversion(self):
@@ -1209,7 +1208,8 @@ class PSBTTest(BitcoinTestFramework):
         self.log.info("Test descriptorprocesspsbt raises if an invalid sighashtype is passed")
         assert_raises_rpc_error(-8, "'all' is not a valid sighash parameter.", self.nodes[2].descriptorprocesspsbt, psbt, [descriptor], sighashtype="all")
 
-        self.test_sighash_mismatch()
+        if not self.options.usecli:
+            self.test_sighash_mismatch()
         self.test_sighash_adding()
 
 if __name__ == '__main__':

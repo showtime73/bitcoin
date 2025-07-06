@@ -356,11 +356,6 @@ RPCHelpMan importdescriptors()
     // the user could have gotten from another RPC command prior to now
     wallet.BlockUntilSyncedToCurrentChain();
 
-    //  Make sure wallet is a descriptor wallet
-    if (!pwallet->IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS)) {
-        throw JSONRPCError(RPC_WALLET_ERROR, "importdescriptors is not available for non-descriptor wallets");
-    }
-
     WalletRescanReserver reserver(*pwallet);
     if (!reserver.reserve(/*with_passphrase=*/true)) {
         throw JSONRPCError(RPC_WALLET_ERROR, "Wallet is currently rescanning. Abort existing rescan or wait.");
@@ -399,6 +394,7 @@ RPCHelpMan importdescriptors()
             }
         }
         pwallet->ConnectScriptPubKeyManNotifiers();
+        pwallet->RefreshAllTXOs();
     }
 
     // Rescan the blockchain using the lowest timestamp
@@ -462,7 +458,7 @@ RPCHelpMan listdescriptors()
 {
     return RPCHelpMan{
         "listdescriptors",
-        "List descriptors imported into a descriptor-enabled wallet.\n",
+        "List all descriptors present in a wallet.\n",
         {
             {"private", RPCArg::Type::BOOL, RPCArg::Default{false}, "Show private descriptors."}
         },
@@ -492,10 +488,6 @@ RPCHelpMan listdescriptors()
 {
     const std::shared_ptr<const CWallet> wallet = GetWalletForJSONRPCRequest(request);
     if (!wallet) return UniValue::VNULL;
-
-    if (!wallet->IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS)) {
-        throw JSONRPCError(RPC_WALLET_ERROR, "listdescriptors is not available for non-descriptor wallets");
-    }
 
     const bool priv = !request.params[0].isNull() && request.params[0].get_bool();
     if (priv) {
@@ -611,8 +603,8 @@ RPCHelpMan restorewallet()
     return RPCHelpMan{
         "restorewallet",
         "Restores and loads a wallet from backup.\n"
-        "\nThe rescan is significantly faster if a descriptor wallet is restored"
-        "\nand block filters are available (using startup option \"-blockfilterindex=1\").\n",
+        "\nThe rescan is significantly faster if block filters are available"
+        "\n(using startup option \"-blockfilterindex=1\").\n",
         {
             {"wallet_name", RPCArg::Type::STR, RPCArg::Optional::NO, "The name that will be applied to the restored wallet"},
             {"backup_file", RPCArg::Type::STR, RPCArg::Optional::NO, "The backup file that will be used to restore the wallet."},

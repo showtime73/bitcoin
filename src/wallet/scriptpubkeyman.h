@@ -112,12 +112,6 @@ public:
      */
     virtual std::vector<WalletDestination> MarkUnusedAddresses(const CScript& script) { return {}; }
 
-    /** Sets up the key generation stuff, i.e. generates new HD seeds and sets them as active.
-      * Returns false if already setup or setup fails, true if setup is successful
-      * Set force=true to make it re-setup if already setup, used for upgrades
-      */
-    virtual bool SetupGeneration(bool force = false) { return false; }
-
     /* Returns true if HD is enabled */
     virtual bool IsHDEnabled() const { return false; }
 
@@ -132,8 +126,6 @@ public:
 
     //! The action to do when the DB needs rewrite
     virtual void RewriteDB() {}
-
-    virtual std::optional<int64_t> GetOldestKeyPoolTime() const { return GetTime(); }
 
     virtual unsigned int GetKeyPoolSize() const { return 0; }
 
@@ -364,7 +356,6 @@ public:
     std::optional<CKey> GetKey(const CKeyID& keyid) const EXCLUSIVE_LOCKS_REQUIRED(cs_desc_man);
     bool HaveCryptedKeys() const override;
 
-    std::optional<int64_t> GetOldestKeyPoolTime() const override;
     unsigned int GetKeyPoolSize() const override;
 
     int64_t GetTimeFirstKey() const override;

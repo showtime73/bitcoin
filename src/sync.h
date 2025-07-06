@@ -14,6 +14,7 @@
 #include <threadsafety.h> // IWYU pragma: export
 #include <util/macros.h>
 
+#include <cassert>
 #include <condition_variable>
 #include <mutex>
 #include <string>
@@ -212,16 +213,19 @@ public:
     /**
      * An RAII-style reverse lock. Unlocks on construction and locks on destruction.
      */
-    class reverse_lock {
+    class SCOPED_LOCKABLE reverse_lock {
     public:
-        explicit reverse_lock(UniqueLock& _lock, const char* _guardname, const char* _file, int _line) : lock(_lock), file(_file), line(_line) {
+        explicit reverse_lock(UniqueLock& _lock, const MutexType& mutex, const char* _guardname, const char* _file, int _line) UNLOCK_FUNCTION(mutex) : lock(_lock), file(_file), line(_line) {
+            // Ensure that mutex passed back for thread-safety analysis is indeed the original
+            assert(std::addressof(mutex) == lock.mutex());
+
             CheckLastCritical((void*)lock.mutex(), lockname, _guardname, _file, _line);
             lock.unlock();
             LeaveCritical();
             lock.swap(templock);
         }
 
-        ~reverse_lock() {
+        ~reverse_lock() UNLOCK_FUNCTION() {
             templock.swap(lock);
             EnterCritical(lockname.c_str(), file.c_str(), line, lock.mutex());
             lock.lock();
@@ -240,7 +244,11 @@ public:
      friend class reverse_lock;
 };
 
-#define REVERSE_LOCK(g) typename std::decay<decltype(g)>::type::reverse_lock UNIQUE_NAME(revlock)(g, #g, __FILE__, __LINE__)
+// clang's thread-safety analyzer is unable to deal with aliases of mutexes, so
+// it is not possible to use the lock's copy of the mutex for that purpose.
+// Instead, the original mutex needs to be passed back to the reverse_lock for
+// the sake of thread-safety analysis, but it is not actually used otherwise.
+#define REVERSE_LOCK(g, cs) typename std::decay<decltype(g)>::type::reverse_lock UNIQUE_NAME(revlock)(g, cs, #g, __FILE__, __LINE__)
 
 // When locking a Mutex, require negative capability to ensure the lock
 // is not already held
@@ -258,8 +266,9 @@ inline MutexType* MaybeCheckNotHeld(MutexType* m) LOCKS_EXCLUDED(m) LOCK_RETURNE
 #define LOCK2(cs1, cs2)                                               \
     UniqueLock criticalblock1(MaybeCheckNotHeld(cs1), #cs1, __FILE__, __LINE__); \
     UniqueLock criticalblock2(MaybeCheckNotHeld(cs2), #cs2, __FILE__, __LINE__)
-#define TRY_LOCK(cs, name) UniqueLock name(MaybeCheckNotHeld(cs), #cs, __FILE__, __LINE__, true)
-#define WAIT_LOCK(cs, name) UniqueLock name(MaybeCheckNotHeld(cs), #cs, __FILE__, __LINE__)
+#define LOCK_ARGS(cs) MaybeCheckNotHeld(cs), #cs, __FILE__, __LINE__
+#define TRY_LOCK(cs, name) UniqueLock name(LOCK_ARGS(cs), true)
+#define WAIT_LOCK(cs, name) UniqueLock name(LOCK_ARGS(cs))
 
 #define ENTER_CRITICAL_SECTION(cs)                            \
     {                                                         \
