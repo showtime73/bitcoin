@@ -37,8 +37,6 @@
 __AFL_FUZZ_INIT();
 #endif
 
-const std::function<void(const std::string&)> G_TEST_LOG_FUN{};
-
 /**
  * A copy of the command line arguments that start with `--`.
  * First `LLVMFuzzerInitialize()` is called, which saves the arguments to `g_args`.
@@ -51,7 +49,7 @@ static std::vector<const char*> g_args;
 static void SetArgs(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         // Only take into account arguments that start with `--`. The others are for the fuzz engine:
-        // `fuzz -runs=1 fuzz_corpora/address_deserialize_v2 --checkaddrman=5`
+        // `fuzz -runs=1 fuzz_corpora/address_deserialize --checkaddrman=5`
         if (strlen(argv[i]) > 2 && argv[i][0] == '-' && argv[i][1] == '-') {
             g_args.push_back(argv[i]);
         }
@@ -75,7 +73,7 @@ auto& FuzzTargets()
 
 void FuzzFrameworkRegisterTarget(std::string_view name, TypeTestOneInput target, FuzzTargetOptions opts)
 {
-    const auto [it, ins]{FuzzTargets().try_emplace(name, FuzzTarget /* temporary can be dropped after Apple-Clang-16 ? */ {std::move(target), std::move(opts)})};
+    const auto [it, ins]{FuzzTargets().try_emplace(name, std::move(target), std::move(opts))};
     Assert(ins);
 }
 
@@ -102,7 +100,7 @@ static void initialize()
     SeedRandomStateForTest(SeedRand::ZEROS);
 
     // Set time to the genesis block timestamp for deterministic initialization.
-    SetMockTime(1231006505);
+    SetMockTime(1231006505s);
 
     // Terminate immediately if a fuzzing harness ever tries to create a socket.
     // Individual tests can override this by pointing CreateSock to a mocked alternative.
@@ -233,7 +231,7 @@ int main(int argc, char** argv)
     // Enable AFL persistent mode. Requires compilation using afl-clang-fast++.
     // See fuzzing.md for details.
     const uint8_t* buffer = __AFL_FUZZ_TESTCASE_BUF;
-    while (__AFL_LOOP(100000)) {
+    while (__AFL_LOOP(100'000)) {
         size_t buffer_len = __AFL_FUZZ_TESTCASE_LEN;
         test_one_input({buffer, buffer_len});
     }

@@ -1,4 +1,4 @@
-// Copyright (c) 2022 The Bitcoin Core developers
+// Copyright (c) 2022-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -11,10 +11,11 @@
 #include <common/messages.h>
 #include <consensus/amount.h>
 #include <kernel/chainparams.h>
-#include <logging.h>
 #include <policy/feerate.h>
 #include <policy/policy.h>
 #include <tinyformat.h>
+#include <txgraph.h>
+#include <util/log.h>
 #include <util/moneystr.h>
 #include <util/translation.h>
 
@@ -31,13 +32,13 @@ static constexpr int MAX_32BIT_MEMPOOL_MB{500};
 namespace {
 void ApplyArgsManOptions(const ArgsManager& argsman, MemPoolLimits& mempool_limits)
 {
+    mempool_limits.cluster_count = argsman.GetIntArg("-limitclustercount", mempool_limits.cluster_count);
+
+    if (auto vkb = argsman.GetIntArg("-limitclustersize")) mempool_limits.cluster_size_vbytes = *vkb * 1'000;
+
     mempool_limits.ancestor_count = argsman.GetIntArg("-limitancestorcount", mempool_limits.ancestor_count);
 
-    if (auto vkb = argsman.GetIntArg("-limitancestorsize")) mempool_limits.ancestor_size_vbytes = *vkb * 1'000;
-
     mempool_limits.descendant_count = argsman.GetIntArg("-limitdescendantcount", mempool_limits.descendant_count);
-
-    if (auto vkb = argsman.GetIntArg("-limitdescendantsize")) mempool_limits.descendant_size_vbytes = *vkb * 1'000;
 }
 }
 
@@ -65,6 +66,7 @@ util::Result<void> ApplyArgsManOptions(const ArgsManager& argsman, const CChainP
         }
     }
 
+    static_assert(DEFAULT_MIN_RELAY_TX_FEE == DEFAULT_INCREMENTAL_RELAY_FEE);
     if (const auto arg{argsman.GetArg("-minrelaytxfee")}) {
         if (std::optional<CAmount> min_relay_feerate = ParseMoney(*arg)) {
             // High fee check is done afterward in CWallet::Create()
@@ -75,7 +77,7 @@ util::Result<void> ApplyArgsManOptions(const ArgsManager& argsman, const CChainP
     } else if (mempool_opts.incremental_relay_feerate > mempool_opts.min_relay_feerate) {
         // Allow only setting incremental fee to control both
         mempool_opts.min_relay_feerate = mempool_opts.incremental_relay_feerate;
-        LogPrintf("Increasing minrelaytxfee to %s to match incrementalrelayfee\n", mempool_opts.min_relay_feerate.ToString());
+        LogInfo("Increasing minrelaytxfee to %s to match incrementalrelayfee", mempool_opts.min_relay_feerate.ToString());
     }
 
     // Feerate used to define dust.  Shouldn't be changed lightly as old
@@ -101,9 +103,11 @@ util::Result<void> ApplyArgsManOptions(const ArgsManager& argsman, const CChainP
         return util::Error{Untranslated(strprintf("acceptnonstdtxn is not currently supported for %s chain", chainparams.GetChainTypeString()))};
     }
 
-    mempool_opts.persist_v1_dat = argsman.GetBoolArg("-persistmempoolv1", mempool_opts.persist_v1_dat);
-
     ApplyArgsManOptions(argsman, mempool_opts.limits);
+
+    if (mempool_opts.limits.cluster_count > MAX_CLUSTER_COUNT_LIMIT) {
+        return util::Error{Untranslated(strprintf("limitclustercount must be less than or equal to %d", MAX_CLUSTER_COUNT_LIMIT))};
+    }
 
     return {};
 }

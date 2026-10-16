@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2022 The Bitcoin Core developers
+// Copyright (c) 2009-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -13,7 +13,7 @@
 #include <cstdint>
 #include <optional>
 
-using util::ContainsNoNUL;
+using util::ContainsNUL;
 using util::TrimString;
 
 std::string FormatMoney(const CAmount n)
@@ -44,7 +44,7 @@ std::string FormatMoney(const CAmount n)
 
 std::optional<CAmount> ParseMoney(const std::string& money_string)
 {
-    if (!ContainsNoNUL(money_string)) {
+    if (ContainsNUL(money_string)) {
         return std::nullopt;
     }
     const std::string str = TrimString(money_string);

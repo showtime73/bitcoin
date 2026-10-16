@@ -1,17 +1,17 @@
-// Copyright (c) 2021-2022 The Bitcoin Core developers
+// Copyright (c) 2021-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_ADDRMAN_IMPL_H
 #define BITCOIN_ADDRMAN_IMPL_H
 
-#include <logging.h>
 #include <logging/timer.h>
 #include <netaddress.h>
 #include <protocol.h>
 #include <serialize.h>
 #include <sync.h>
 #include <uint256.h>
+#include <util/log.h>
 #include <util/time.h>
 
 #include <cstdint>
@@ -23,14 +23,14 @@
 #include <vector>
 
 /** Total number of buckets for tried addresses */
-static constexpr int32_t ADDRMAN_TRIED_BUCKET_COUNT_LOG2{8};
-static constexpr int ADDRMAN_TRIED_BUCKET_COUNT{1 << ADDRMAN_TRIED_BUCKET_COUNT_LOG2};
+inline constexpr int32_t ADDRMAN_TRIED_BUCKET_COUNT_LOG2{8};
+inline constexpr int ADDRMAN_TRIED_BUCKET_COUNT{1 << ADDRMAN_TRIED_BUCKET_COUNT_LOG2};
 /** Total number of buckets for new addresses */
-static constexpr int32_t ADDRMAN_NEW_BUCKET_COUNT_LOG2{10};
-static constexpr int ADDRMAN_NEW_BUCKET_COUNT{1 << ADDRMAN_NEW_BUCKET_COUNT_LOG2};
+inline constexpr int32_t ADDRMAN_NEW_BUCKET_COUNT_LOG2{10};
+inline constexpr int ADDRMAN_NEW_BUCKET_COUNT{1 << ADDRMAN_NEW_BUCKET_COUNT_LOG2};
 /** Maximum allowed number of entries in buckets for new and tried addresses */
-static constexpr int32_t ADDRMAN_BUCKET_SIZE_LOG2{6};
-static constexpr int ADDRMAN_BUCKET_SIZE{1 << ADDRMAN_BUCKET_SIZE_LOG2};
+inline constexpr int32_t ADDRMAN_BUCKET_SIZE_LOG2{6};
+inline constexpr int ADDRMAN_BUCKET_SIZE{1 << ADDRMAN_BUCKET_SIZE_LOG2};
 
 /**
  * User-defined type for the internally used nIds
@@ -135,7 +135,7 @@ public:
     std::pair<CAddress, NodeSeconds> Select(bool new_only, const std::unordered_set<Network>& networks) const
         EXCLUSIVE_LOCKS_REQUIRED(!cs);
 
-    std::vector<CAddress> GetAddr(size_t max_addresses, size_t max_pct, std::optional<Network> network, const bool filtered = true) const
+    std::vector<CAddress> GetAddr(size_t max_addresses, size_t max_pct, std::optional<Network> network, bool filtered = true) const
         EXCLUSIVE_LOCKS_REQUIRED(!cs);
 
     std::vector<std::pair<AddrInfo, AddressPosition>> GetEntries(bool from_tried) const
@@ -267,7 +267,7 @@ private:
      * */
     nid_type GetEntry(bool use_tried, size_t bucket, size_t position) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 
-    std::vector<CAddress> GetAddr_(size_t max_addresses, size_t max_pct, std::optional<Network> network, const bool filtered = true) const EXCLUSIVE_LOCKS_REQUIRED(cs);
+    std::vector<CAddress> GetAddr_(size_t max_addresses, size_t max_pct, std::optional<Network> network, bool filtered = true) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     std::vector<std::pair<AddrInfo, AddressPosition>> GetEntries_(bool from_tried) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 

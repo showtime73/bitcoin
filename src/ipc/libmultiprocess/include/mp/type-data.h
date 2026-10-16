@@ -1,4 +1,4 @@
-// Copyright (c) 2025 The Bitcoin Core developers
+// Copyright (c) The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -6,6 +6,10 @@
 #define MP_PROXY_TYPE_DATA_H
 
 #include <mp/util.h>
+
+#include <concepts>
+#include <span>
+#include <ranges>
 
 namespace mp {
 template <typename T, typename U>
@@ -30,7 +34,7 @@ requires (std::is_same_v<decltype(output.get()), ::capnp::Data::Builder> && IsBy
 {
     auto data = std::span{value};
     auto result = output.init(data.size());
-    memcpy(result.begin(), data.data(), data.size());
+    std::ranges::copy(data, result.begin());
 }
 
 template <typename LocalType, typename Input, typename ReadDest>

@@ -1,4 +1,4 @@
-// Copyright (c) 2025 The Bitcoin Core developers
+// Copyright (c) The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -50,7 +50,7 @@ decltype(auto) CustomReadField(TypeList<std::shared_ptr<LocalType>>,
     ReadDest&& read_dest)
 {
     return read_dest.update([&](auto& value) {
-        if (!input.has()) {
+        if (!CustomHasField(TypeList<LocalType>(), invoke_context, input)) {
             value.reset();
         } else if (value) {
             ReadField(TypeList<LocalType>(), invoke_context, input, ReadDestUpdate(*value));
@@ -72,7 +72,7 @@ decltype(auto) CustomReadField(TypeList<std::shared_ptr<const LocalType>>,
     ReadDest&& read_dest)
 {
     return read_dest.update([&](auto& value) {
-        if (!input.has()) {
+        if (!CustomHasField(TypeList<LocalType>(), invoke_context, input)) {
             value.reset();
             return;
         }

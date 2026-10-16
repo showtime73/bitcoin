@@ -34,7 +34,25 @@ The ZMQ functional test requires a python ZMQ library. To install it:
 - on Unix, run `sudo apt-get install python3-zmq`
 - on mac OS, run `pip3 install pyzmq`
 
+The IPC functional test requires a python IPC library. `pip3 install pycapnp` may work, but if not, install it from source:
 
+```sh
+git clone -b v2.2.1 https://github.com/capnproto/pycapnp
+pip3 install ./pycapnp
+```
+
+If that does not work, try adding `-C force-bundled-libcapnp=True` to the `pip` command.
+Depending on the system, it may be necessary to install and run in a venv:
+
+```sh
+python -m venv venv
+git clone -b v2.2.1 https://github.com/capnproto/pycapnp
+venv/bin/pip3 install ./pycapnp -C force-bundled-libcapnp=True
+venv/bin/python3 build/test/functional/interface_ipc.py
+```
+
+The functional tests assume Python UTF-8 Mode, which is the default on most
+systems.
 On Windows the `PYTHONUTF8` environment variable must be set to 1:
 
 ```cmd
@@ -299,26 +317,6 @@ See this link for considerations: https://www.kernel.org/doc/Documentation/secur
 Often while debugging RPC calls in functional tests, the test might time out before the
 process can return a response. Use `--timeout-factor 0` to disable all RPC timeouts for that particular
 functional test. Ex: `build/test/functional/wallet_hd.py --timeout-factor 0`.
-
-##### Profiling
-
-An easy way to profile node performance during functional tests is provided
-for Linux platforms using `perf`.
-
-Perf will sample the running node and will generate profile data in the node's
-datadir. The profile data can then be presented using `perf report` or a graphical
-tool like [hotspot](https://github.com/KDAB/hotspot).
-
-To generate a profile during test suite runs, use the `--perf` flag.
-
-To see render the output to text, run
-
-```sh
-perf report -i /path/to/datadir/send-big-msgs.perf.data.xxxx --stdio | c++filt | less
-```
-
-For ways to generate more granular profiles, see the README in
-[test/functional](/test/functional).
 
 ### Lint tests
 

@@ -1,4 +1,4 @@
-// Copyright (c) 2019 The Bitcoin Core developers
+// Copyright (c) The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -6,13 +6,16 @@
 #include <mp/util.h>
 
 #include <algorithm>
+#include <capnp/schema.capnp.h> // IWYU pragma: keep
+#include <capnp/schema.h>
 #include <capnp/schema-parser.h>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <errno.h>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <iostream>
 #include <kj/array.h>
 #include <kj/common.h>
@@ -26,6 +29,7 @@
 #include <string>
 #include <system_error>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 #define PROXY_BIN "mpgen"
@@ -76,7 +80,7 @@ static bool GetAnnotationInt32(const Reader& reader, uint64_t id, int32_t* resul
     return false;
 }
 
-static void ForEachMethod(const capnp::InterfaceSchema& interface, const std::function<void(const capnp::InterfaceSchema& interface, const capnp::InterfaceSchema::Method)>& callback)
+static void ForEachMethod(const capnp::InterfaceSchema& interface, const std::function<void(const capnp::InterfaceSchema& interface, const capnp::InterfaceSchema::Method)>& callback) // NOLINT(misc-no-recursion)
 {
     for (const auto super : interface.getSuperclasses()) {
         ForEachMethod(super, callback);
@@ -122,6 +126,109 @@ static bool BoxedType(const ::capnp::Type& type)
              type.isFloat64() || type.isEnum());
 }
 
+struct Field
+{
+    ::capnp::StructSchema::Field param;
+    bool param_is_set = false;
+    ::capnp::StructSchema::Field result;
+    bool result_is_set = false;
+    int args = 0;
+    bool retval = false;
+    bool optional = false;
+    bool requested = false;
+    bool skip = false;
+    kj::StringPtr exception;
+};
+
+struct FieldList
+{
+    std::vector<Field> fields;
+    std::map<kj::StringPtr, int> field_idx; // name -> args index
+    bool has_result = false;
+
+    void addField(const ::capnp::StructSchema::Field& schema_field, bool param, bool result)
+    {
+        auto field_name = schema_field.getProto().getName();
+        auto inserted = field_idx.emplace(field_name, fields.size());
+        if (inserted.second) {
+            fields.emplace_back();
+        }
+        auto& field = fields[inserted.first->second];
+        if (param) {
+            field.param = schema_field;
+            field.param_is_set = true;
+        }
+        if (result) {
+            field.result = schema_field;
+            field.result_is_set = true;
+        }
+
+        if (!param && field_name == kj::StringPtr{"result"}) {
+            field.retval = true;
+            has_result = true;
+        }
+
+        if (AnnotationExists(schema_field.getProto(), SKIP_ANNOTATION_ID)) {
+            field.skip = true;
+        }
+        GetAnnotationText(schema_field.getProto(), EXCEPTION_ANNOTATION_ID, &field.exception);
+
+        int32_t count = 1;
+        if (!GetAnnotationInt32(schema_field.getProto(), COUNT_ANNOTATION_ID, &count)) {
+            if (schema_field.getType().isStruct()) {
+                GetAnnotationInt32(schema_field.getType().asStruct().getProto(),
+                        COUNT_ANNOTATION_ID, &count);
+            } else if (schema_field.getType().isInterface()) {
+                GetAnnotationInt32(schema_field.getType().asInterface().getProto(),
+                        COUNT_ANNOTATION_ID, &count);
+            }
+        }
+
+
+        if (inserted.second && !field.retval && !field.exception.size()) {
+            field.args = count;
+        }
+    }
+
+    void mergeFields()
+    {
+        for (auto& field : field_idx) {
+            auto has_field = field_idx.find("has" + Cap(field.first));
+            if (has_field != field_idx.end()) {
+                fields[has_field->second].skip = true;
+                fields[field.second].optional = true;
+            }
+            auto want_field = field_idx.find("want" + Cap(field.first));
+            if (want_field != field_idx.end() && fields[want_field->second].param_is_set) {
+                fields[want_field->second].skip = true;
+                fields[field.second].requested = true;
+            }
+        }
+    }
+};
+
+std::string AccessorType(kj::StringPtr base_name, const Field& field)
+{
+    const auto& f = field.param_is_set ? field.param : field.result;
+    const auto field_name = f.getProto().getName();
+    const auto field_type = f.getType();
+
+    std::ostringstream out;
+    out << "Accessor<" << base_name  << "_fields::" << Cap(field_name) << ", ";
+    if (!field.param_is_set) {
+        out << "FIELD_OUT";
+    } else if (field.result_is_set) {
+        out << "FIELD_IN | FIELD_OUT";
+    } else {
+        out << "FIELD_IN";
+    }
+    if (field.optional) out << " | FIELD_OPTIONAL";
+    if (field.requested) out << " | FIELD_REQUESTED";
+    if (BoxedType(field_type)) out << " | FIELD_BOXED";
+    out << ">";
+    return out.str();
+}
+
 // src_file is path to .capnp file to generate stub code from.
 //
 // src_prefix can be used to generate outputs in a different directory than the
@@ -133,7 +240,7 @@ static bool BoxedType(const ::capnp::Type& type)
 // include_prefix can be used to control relative include paths used in
 // generated files. For example if src_file is "/a/b/c/d/file.canp" and
 // include_prefix is "/a/b/c" include lines like
-// "#include <d/file.capnp.proxy.h>" "#include <d/file.capnp.proxy-types.h>"i
+// "#include <d/file.capnp.proxy.h>", "#include <d/file.capnp.proxy-types.h>"
 // will be generated.
 static void Generate(kj::StringPtr src_prefix,
     kj::StringPtr include_prefix,
@@ -143,7 +250,7 @@ static void Generate(kj::StringPtr src_prefix,
     const std::vector<kj::Own<const kj::ReadableDirectory>>& import_dirs)
 {
     std::string output_path;
-    if (src_prefix == ".") {
+    if (src_prefix == kj::StringPtr{"."}) {
         output_path = src_file;
     } else if (!src_file.startsWith(src_prefix) || src_file.size() <= src_prefix.size() ||
                src_file[src_prefix.size()] != '/') {
@@ -153,7 +260,7 @@ static void Generate(kj::StringPtr src_prefix,
     }
 
     std::string include_path;
-    if (include_prefix == ".") {
+    if (include_prefix == kj::StringPtr{"."}) {
         include_path = src_file;
     } else if (!src_file.startsWith(include_prefix) || src_file.size() <= include_prefix.size() ||
                src_file[include_prefix.size()] != '/') {
@@ -198,19 +305,53 @@ static void Generate(kj::StringPtr src_prefix,
 
     std::ofstream cpp_server(output_path + ".proxy-server.c++");
     cpp_server << "// Generated by " PROXY_BIN " from " << src_file << "\n\n";
+    cpp_server << "// IWYU pragma: no_include <kj/memory.h>\n";
+    cpp_server << "// IWYU pragma: no_include <memory>\n";
+    cpp_server << "// IWYU pragma: begin_keep\n";
+    cpp_server << "#include <" << include_path << ".proxy.h>\n";
     cpp_server << "#include <" << include_path << ".proxy-types.h>\n";
-    cpp_server << "#include <" << PROXY_TYPES << ">\n\n";
+    cpp_server << "#include <capnp/generated-header-support.h>\n";
+    cpp_server << "#include <cstring>\n";
+    cpp_server << "#include <kj/async.h>\n";
+    cpp_server << "#include <kj/common.h>\n";
+    cpp_server << "#include <kj/exception.h>\n";
+    cpp_server << "#include <kj/tuple.h>\n";
+    cpp_server << "#include <mp/proxy.h>\n";
+    cpp_server << "#include <mp/util.h>\n";
+    cpp_server << "#include <" << PROXY_TYPES << ">\n";
+    cpp_server << "// IWYU pragma: end_keep\n\n";
     cpp_server << "namespace mp {\n";
 
     std::ofstream cpp_client(output_path + ".proxy-client.c++");
     cpp_client << "// Generated by " PROXY_BIN " from " << src_file << "\n\n";
+    cpp_client << "// IWYU pragma: no_include <kj/memory.h>\n";
+    cpp_client << "// IWYU pragma: no_include <memory>\n";
+    cpp_client << "// IWYU pragma: begin_keep\n";
+    cpp_client << "#include <" << include_path << ".h>\n";
+    cpp_client << "#include <" << include_path << ".proxy.h>\n";
     cpp_client << "#include <" << include_path << ".proxy-types.h>\n";
-    cpp_client << "#include <" << PROXY_TYPES << ">\n\n";
+    cpp_client << "#include <capnp/capability.h>\n";
+    cpp_client << "#include <capnp/common.h>\n";
+    cpp_client << "#include <capnp/generated-header-support.h>\n";
+    cpp_client << "#include <cstring>\n";
+    cpp_client << "#include <functional>\n";
+    cpp_client << "#include <kj/common.h>\n";
+    cpp_client << "#include <map>\n";
+    cpp_client << "#include <mp/proxy.h>\n";
+    cpp_client << "#include <mp/util.h>\n";
+    cpp_client << "#include <string>\n";
+    cpp_client << "#include <vector>\n";
+    cpp_client << "#include <" << PROXY_TYPES << ">\n";
+    cpp_client << "// IWYU pragma: end_keep\n\n";
     cpp_client << "namespace mp {\n";
 
     std::ofstream cpp_types(output_path + ".proxy-types.c++");
     cpp_types << "// Generated by " PROXY_BIN " from " << src_file << "\n\n";
-    cpp_types << "#include <" << include_path << ".proxy-types.h>\n";
+    cpp_types << "// IWYU pragma: no_include \"mp/proxy.h\"\n";
+    cpp_types << "// IWYU pragma: no_include \"mp/proxy-io.h\"\n";
+    cpp_types << "#include <" << include_path << ".h> // IWYU pragma: keep\n";
+    cpp_types << "#include <" << include_path << ".proxy.h>\n";
+    cpp_types << "#include <" << include_path << ".proxy-types.h> // IWYU pragma: keep\n";
     cpp_types << "#include <" << PROXY_TYPES << ">\n\n";
     cpp_types << "namespace mp {\n";
 
@@ -226,10 +367,12 @@ static void Generate(kj::StringPtr src_prefix,
     inl << "// Generated by " PROXY_BIN " from " << src_file << "\n\n";
     inl << "#ifndef " << guard << "_PROXY_TYPES_H\n";
     inl << "#define " << guard << "_PROXY_TYPES_H\n\n";
-    inl << "#include <" << include_path << ".proxy.h>\n";
+    inl << "// IWYU pragma: no_include \"mp/proxy.h\"\n";
+    inl << "#include <mp/proxy.h> // IWYU pragma: keep\n";
+    inl << "#include <" << include_path << ".proxy.h> // IWYU pragma: keep\n";
     for (const auto annotation : file_schema.getProto().getAnnotations()) {
         if (annotation.getId() == INCLUDE_TYPES_ANNOTATION_ID) {
-            inl << "#include <" << annotation.getValue().getText() << ">\n";
+            inl << "#include \"" << annotation.getValue().getText() << "\" // IWYU pragma: export\n";
         }
     }
     inl << "namespace mp {\n";
@@ -238,10 +381,10 @@ static void Generate(kj::StringPtr src_prefix,
     h << "// Generated by " PROXY_BIN " from " << src_file << "\n\n";
     h << "#ifndef " << guard << "_PROXY_H\n";
     h << "#define " << guard << "_PROXY_H\n\n";
-    h << "#include <" << include_path << ".h>\n";
+    h << "#include <" << include_path << ".h> // IWYU pragma: keep\n";
     for (const auto annotation : file_schema.getProto().getAnnotations()) {
         if (annotation.getId() == INCLUDE_ANNOTATION_ID) {
-            h << "#include <" << annotation.getValue().getText() << ">\n";
+            h << "#include \"" << annotation.getValue().getText() << "\" // IWYU pragma: export\n";
         }
     }
     h << "#include <" << PROXY_DECL << ">\n\n";
@@ -299,6 +442,13 @@ static void Generate(kj::StringPtr src_prefix,
 
         if (node.getProto().isStruct()) {
             const auto& struc = node.asStruct();
+
+            FieldList fields;
+            for (const auto schema_field : struc.getFields()) {
+                fields.addField(schema_field, true, true);
+            }
+            fields.mergeFields();
+
             std::ostringstream generic_name;
             generic_name << node_name;
             dec << "template<";
@@ -319,22 +469,18 @@ static void Generate(kj::StringPtr src_prefix,
             dec << "struct ProxyStruct<" << message_namespace << "::" << generic_name.str() << ">\n";
             dec << "{\n";
             dec << "    using Struct = " << message_namespace << "::" << generic_name.str() << ";\n";
-            for (const auto field : struc.getFields()) {
-                auto field_name = field.getProto().getName();
+            for (const auto& field : fields.fields) {
+                auto field_name = field.param.getProto().getName();
                 add_accessor(field_name);
-                dec << "    using " << Cap(field_name) << "Accessor = Accessor<" << base_name
-                    << "_fields::" << Cap(field_name) << ", FIELD_IN | FIELD_OUT";
-                if (BoxedType(field.getType())) dec << " | FIELD_BOXED";
-                dec << ">;\n";
+                dec << "    using " << Cap(field_name) << "Accessor = "
+                    << AccessorType(base_name, field) << ";\n";
             }
             dec << "    using Accessors = std::tuple<";
             size_t i = 0;
-            for (const auto field : struc.getFields()) {
-                if (AnnotationExists(field.getProto(), SKIP_ANNOTATION_ID)) {
-                    continue;
-                }
+            for (const auto& field : fields.fields) {
+                if (field.skip) continue;
                 if (i) dec << ", ";
-                dec << Cap(field.getProto().getName()) << "Accessor";
+                dec << Cap(field.param.getProto().getName()) << "Accessor";
                 ++i;
             }
             dec << ">;\n";
@@ -348,13 +494,11 @@ static void Generate(kj::StringPtr src_prefix,
                 inl << "public:\n";
                 inl << "    using Struct = " << message_namespace << "::" << node_name << ";\n";
                 size_t i = 0;
-                for (const auto field : struc.getFields()) {
-                    if (AnnotationExists(field.getProto(), SKIP_ANNOTATION_ID)) {
-                        continue;
-                    }
-                    auto field_name = field.getProto().getName();
+                for (const auto& field : fields.fields) {
+                    if (field.skip) continue;
+                    auto field_name = field.param.getProto().getName();
                     auto member_name = field_name;
-                    GetAnnotationText(field.getProto(), NAME_ANNOTATION_ID, &member_name);
+                    GetAnnotationText(field.param.getProto(), NAME_ANNOTATION_ID, &member_name);
                     inl << "    static decltype(auto) get(std::integral_constant<size_t, " << i << ">) { return "
                         << "&" << proxied_class_type << "::" << member_name << "; }\n";
                     ++i;
@@ -394,88 +538,17 @@ static void Generate(kj::StringPtr src_prefix,
 
                 const std::string method_prefix = Format() << message_namespace << "::" << method_interface.getShortDisplayName()
                                                            << "::" << Cap(method_name);
-                const bool is_construct = method_name == "construct";
-                const bool is_destroy = method_name == "destroy";
+                const bool is_construct = method_name == kj::StringPtr{"construct"};
+                const bool is_destroy = method_name == kj::StringPtr{"destroy"};
 
-                struct Field
-                {
-                    ::capnp::StructSchema::Field param;
-                    bool param_is_set = false;
-                    ::capnp::StructSchema::Field result;
-                    bool result_is_set = false;
-                    int args = 0;
-                    bool retval = false;
-                    bool optional = false;
-                    bool requested = false;
-                    bool skip = false;
-                    kj::StringPtr exception;
-                };
-
-                std::vector<Field> fields;
-                std::map<kj::StringPtr, int> field_idx; // name -> args index
-                bool has_result = false;
-
-                auto add_field = [&](const ::capnp::StructSchema::Field& schema_field, bool param) {
-                    if (AnnotationExists(schema_field.getProto(), SKIP_ANNOTATION_ID)) {
-                        return;
-                    }
-
-                    auto field_name = schema_field.getProto().getName();
-                    auto inserted = field_idx.emplace(field_name, fields.size());
-                    if (inserted.second) {
-                        fields.emplace_back();
-                    }
-                    auto& field = fields[inserted.first->second];
-                    if (param) {
-                        field.param = schema_field;
-                        field.param_is_set = true;
-                    } else {
-                        field.result = schema_field;
-                        field.result_is_set = true;
-                    }
-
-                    if (!param && field_name == "result") {
-                        field.retval = true;
-                        has_result = true;
-                    }
-
-                    GetAnnotationText(schema_field.getProto(), EXCEPTION_ANNOTATION_ID, &field.exception);
-
-                    int32_t count = 1;
-                    if (!GetAnnotationInt32(schema_field.getProto(), COUNT_ANNOTATION_ID, &count)) {
-                        if (schema_field.getType().isStruct()) {
-                            GetAnnotationInt32(schema_field.getType().asStruct().getProto(),
-                                    COUNT_ANNOTATION_ID, &count);
-                        } else if (schema_field.getType().isInterface()) {
-                            GetAnnotationInt32(schema_field.getType().asInterface().getProto(),
-                                    COUNT_ANNOTATION_ID, &count);
-                        }
-                    }
-
-
-                    if (inserted.second && !field.retval && !field.exception.size()) {
-                        field.args = count;
-                    }
-                };
-
+                FieldList fields;
                 for (const auto schema_field : method.getParamType().getFields()) {
-                    add_field(schema_field, true);
+                    fields.addField(schema_field, true, false);
                 }
                 for (const auto schema_field : method.getResultType().getFields()) {
-                    add_field(schema_field, false);
+                    fields.addField(schema_field, false, true);
                 }
-                for (auto& field : field_idx) {
-                    auto has_field = field_idx.find("has" + Cap(field.first));
-                    if (has_field != field_idx.end()) {
-                        fields[has_field->second].skip = true;
-                        fields[field.second].optional = true;
-                    }
-                    auto want_field = field_idx.find("want" + Cap(field.first));
-                    if (want_field != field_idx.end() && fields[want_field->second].param_is_set) {
-                        fields[want_field->second].skip = true;
-                        fields[field.second].requested = true;
-                    }
-                }
+                fields.mergeFields();
 
                 if (!is_construct && !is_destroy && (&method_interface == &interface)) {
                     methods << "template<>\n";
@@ -491,25 +564,11 @@ static void Generate(kj::StringPtr src_prefix,
                 std::ostringstream server_invoke_start;
                 std::ostringstream server_invoke_end;
                 int argc = 0;
-                for (const auto& field : fields) {
+                for (const auto& field : fields.fields) {
                     if (field.skip) continue;
 
                     const auto& f = field.param_is_set ? field.param : field.result;
                     auto field_name = f.getProto().getName();
-                    auto field_type = f.getType();
-
-                    std::ostringstream field_flags;
-                    if (!field.param_is_set) {
-                        field_flags << "FIELD_OUT";
-                    } else if (field.result_is_set) {
-                        field_flags << "FIELD_IN | FIELD_OUT";
-                    } else {
-                        field_flags << "FIELD_IN";
-                    }
-                    if (field.optional) field_flags << " | FIELD_OPTIONAL";
-                    if (field.requested) field_flags << " | FIELD_REQUESTED";
-                    if (BoxedType(field_type)) field_flags << " | FIELD_BOXED";
-
                     add_accessor(field_name);
 
                     std::ostringstream fwd_args;
@@ -536,8 +595,7 @@ static void Generate(kj::StringPtr src_prefix,
                         client_invoke << "MakeClientParam<";
                     }
 
-                    client_invoke << "Accessor<" << base_name << "_fields::" << Cap(field_name) << ", "
-                                  << field_flags.str() << ">>(";
+                    client_invoke << AccessorType(base_name, field) << ">(";
 
                     if (field.retval) {
                         client_invoke << field_name;
@@ -553,8 +611,7 @@ static void Generate(kj::StringPtr src_prefix,
                     } else {
                         server_invoke_start << "MakeServerField<" << field.args;
                     }
-                    server_invoke_start << ", Accessor<" << base_name << "_fields::" << Cap(field_name) << ", "
-                                        << field_flags.str() << ">>(";
+                    server_invoke_start << ", " << AccessorType(base_name, field) << ">(";
                     server_invoke_end << ")";
                 }
 
@@ -570,12 +627,12 @@ static void Generate(kj::StringPtr src_prefix,
                 def_client << "ProxyClient<" << message_namespace << "::" << node_name << ">::M" << method_ordinal
                            << "::Result ProxyClient<" << message_namespace << "::" << node_name << ">::" << method_name
                            << "(" << super_str << client_args.str() << ") {\n";
-                if (has_result) {
+                if (fields.has_result) {
                     def_client << "    typename M" << method_ordinal << "::Result result;\n";
                 }
                 def_client << "    clientInvoke(" << self_str << ", &" << message_namespace << "::" << node_name
                            << "::Client::" << method_name << "Request" << client_invoke.str() << ");\n";
-                if (has_result) def_client << "    return result;\n";
+                if (fields.has_result) def_client << "    return result;\n";
                 def_client << "}\n";
 
                 server << "    kj::Promise<void> " << method_name << "(" << Cap(method_name)

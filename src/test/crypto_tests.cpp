@@ -17,6 +17,7 @@
 #include <crypto/muhash.h>
 #include <random.h>
 #include <streams.h>
+#include <test/util/common.h>
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
 #include <util/strencodings.h>
@@ -1238,6 +1239,12 @@ BOOST_AUTO_TEST_CASE(muhash_tests)
         MuHash3072 a;
         a.Finalize(out2);
 
+        BOOST_CHECK_EQUAL(out, out2);
+
+        // Self-division must yield the empty set
+        y /= x; // x=X, y=Y*X/X
+        y /= y; // x=X, y=1
+        y.Finalize(out);
         BOOST_CHECK_EQUAL(out, out2);
     }
 

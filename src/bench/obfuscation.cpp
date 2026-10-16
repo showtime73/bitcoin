@@ -7,6 +7,7 @@
 #include <util/obfuscation.h>
 
 #include <cstddef>
+#include <span>
 #include <vector>
 
 static void ObfuscationBench(benchmark::Bench& bench)
@@ -22,4 +23,4 @@ static void ObfuscationBench(benchmark::Bench& bench)
     });
 }
 
-BENCHMARK(ObfuscationBench, benchmark::PriorityLevel::HIGH);
+BENCHMARK(ObfuscationBench);

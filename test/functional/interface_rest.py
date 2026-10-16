@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2014-2022 The Bitcoin Core developers
+# Copyright (c) 2014-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the REST API."""
@@ -23,12 +23,13 @@ from test_framework.util import (
     assert_equal,
     assert_greater_than,
     assert_greater_than_or_equal,
+    assert_not_equal,
+    sync_txindex,
 )
 from test_framework.wallet import (
     MiniWallet,
     getnewdestination,
 )
-from typing import Optional
 
 
 INVALID_PARAM = "abc"
@@ -50,31 +51,34 @@ def filter_output_indices_by_value(vouts, value):
         if vout['value'] == value:
             yield vout['n']
 
-class RESTTest (BitcoinTestFramework):
+
+class RESTTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 2
-        self.extra_args = [["-rest", "-blockfilterindex=1"], []]
+        self.extra_args = [["-rest", "-blockfilterindex=1", "-txindex"], []]
         # whitelist peers to speed up tx relay / mempool sync
         self.noban_tx_relay = True
-        self.supports_cli = False
 
     def test_rest_request(
             self,
             uri: str,
             http_method: str = 'GET',
-            req_type: ReqType = ReqType.JSON,
+            req_type: typing.Optional[ReqType] = ReqType.JSON,
             body: str = '',
             status: int = 200,
             ret_type: RetType = RetType.JSON,
-            query_params: Optional[dict[str, typing.Any]] = None,
+            query_params: typing.Union[dict[str, typing.Any], str, None] = None,
             ) -> typing.Union[http.client.HTTPResponse, bytes, str, None]:
         rest_uri = '/rest' + uri
-        if req_type in ReqType:
+        if isinstance(req_type, ReqType):
             rest_uri += f'.{req_type.name.lower()}'
         if query_params:
-            rest_uri += f'?{urllib.parse.urlencode(query_params)}'
+            if isinstance(query_params, str):
+                rest_uri += f'?{query_params}'
+            else:
+                rest_uri += f'?{urllib.parse.urlencode(query_params)}'
 
-        conn = http.client.HTTPConnection(self.url.hostname, self.url.port)
+        conn = http.client.HTTPConnection(self.url.hostname, self.url.port, timeout=self.rpc_timeout)
         self.log.debug(f'{http_method} {rest_uri} {body}')
         if http_method == 'GET':
             conn.request('GET', rest_uri)
@@ -82,7 +86,7 @@ class RESTTest (BitcoinTestFramework):
             conn.request('POST', rest_uri, body)
         resp = conn.getresponse()
 
-        assert_equal(resp.status, status)
+        assert resp.status == status, f"Expected: {status}, Got: {resp.status} ({resp.reason}) - Response: {str(resp.read())}"
 
         if ret_type == RetType.OBJ:
             return resp
@@ -286,10 +290,12 @@ class RESTTest (BitcoinTestFramework):
         assert_equal(len(json_obj), 1)  # ensure that there is one header in the json response
         assert_equal(json_obj[0]['hash'], bb_hash)  # request/response hash should be the same
 
-        # Check invalid uri (% symbol at the end of the request)
-        for invalid_uri in [f"/headers/{bb_hash}%", f"/blockfilterheaders/basic/{bb_hash}%", "/mempool/contents.json?%"]:
+        # Check tolerance for invalid URI (% symbol at the end of the request)
+        for invalid_uri in [f"/headers/{bb_hash}%", f"/blockfilterheaders/basic/{bb_hash}%"]:
             resp = self.test_rest_request(invalid_uri, ret_type=RetType.OBJ, status=400)
-            assert_equal(resp.read().decode('utf-8').rstrip(), "URI parsing failed, it likely contained RFC 3986 invalid characters")
+            assert_equal(resp.read().decode('utf-8').rstrip(), f"Invalid hash: {bb_hash}%")
+        resp = self.test_rest_request("/mempool/contents.json?%", ret_type=RetType.OBJ, status=200)
+        assert_equal(resp.read().decode('utf-8').rstrip(), "{}")
 
         # Compare with normal RPC block response
         rpc_block_json = self.nodes[0].getblock(bb_hash)
@@ -301,7 +307,7 @@ class RESTTest (BitcoinTestFramework):
         expected_filter = {
             'basic block filter index': {'synced': True, 'best_block_height': 208},
         }
-        self.wait_until(lambda: self.nodes[0].getindexinfo() == expected_filter)
+        self.wait_until(lambda: self.nodes[0].getindexinfo("basic block filter index") == expected_filter)
         json_obj = self.test_rest_request(f"/headers/{bb_hash}", query_params={"count": 5})
         assert_equal(len(json_obj), 5)  # now we should have 5 header objects
         json_obj = self.test_rest_request(f"/blockfilterheaders/basic/{bb_hash}", query_params={"count": 5})
@@ -446,15 +452,61 @@ class RESTTest (BitcoinTestFramework):
 
             for i, tx in enumerate(block["tx"]):
                 prevouts = [txin["prevout"] for txin in tx["vin"] if "coinbase" not in txin]
-                # compare with `getblock` JSON output (coinbase tx has no prevouts)
+                # compare binary REST format with `getblock` JSON output (coinbase tx has no prevouts)
                 actual = [(txout.scriptPubKey.hex(), Decimal(txout.nValue) / COIN) for txout in spent[i]]
                 expected = [(p["scriptPubKey"]["hex"], p["value"]) for p in prevouts]
                 assert_equal(expected, actual)
-                # also compare JSON format
-                actual = [(prevout["scriptPubKey"], prevout["value"]) for prevout in spent_json[i]]
-                expected = [(p["scriptPubKey"], p["value"]) for p in prevouts]
-                assert_equal(expected, actual)
+                # also compare the JSON REST format to the getblock verbosity 3 RPC output
+                assert_equal(spent_json[i], prevouts)
 
+        self.log.info("Test the /blockpart URI")
+
+        blockhash = self.nodes[0].getbestblockhash()
+        block_bin = self.test_rest_request(f"/block/{blockhash}", req_type=ReqType.BIN, ret_type=RetType.BYTES)
+        for req_type in (ReqType.BIN, ReqType.HEX):
+            def get_block_part(status: int = 200, **kwargs):
+                resp = self.test_rest_request(f"/blockpart/{blockhash}", status=status,
+                                              req_type=req_type, ret_type=RetType.BYTES, **kwargs)
+                assert isinstance(resp, bytes)
+                if req_type is ReqType.HEX and status == 200:
+                    resp = bytes.fromhex(resp.decode().strip())
+                return resp
+
+            assert_equal(block_bin, get_block_part(query_params={"offset": 0, "size": len(block_bin)}))
+
+            assert len(block_bin) >= 500
+            assert_equal(block_bin[20:320], get_block_part(query_params={"offset": 20, "size": 300}))
+            assert_equal(block_bin[-5:], get_block_part(query_params={"offset": len(block_bin) - 5, "size": 5}))
+
+            get_block_part(status=400, query_params={"offset": 10})
+            get_block_part(status=400, query_params={"size": 100})
+            get_block_part(status=400, query_params={"offset": "x"})
+            get_block_part(status=400, query_params={"size": "y"})
+            get_block_part(status=400, query_params={"offset": "x", "size": "y"})
+            get_block_part(status=400, query_params="%XY")
+            get_block_part(status=400, query_params={"offset": 0, "size": 0})
+            get_block_part(status=400, query_params={"offset": len(block_bin), "size": 0})
+            get_block_part(status=400, query_params={"offset": len(block_bin), "size": 1})
+            get_block_part(status=400, query_params={"offset": len(block_bin) + 1, "size": 1})
+            get_block_part(status=400, query_params={"offset": 0, "size": len(block_bin) + 1})
+
+        res = self.test_rest_request(f"/blockpart/{blockhash}", status=400, req_type=ReqType.BIN, ret_type=RetType.OBJ)
+        assert res.read().decode().startswith("Block part offset missing or invalid")
+
+        res = self.test_rest_request(f"/blockpart/{blockhash}", query_params={"offset":0, "size":1}, status=400, req_type=ReqType.JSON, ret_type=RetType.OBJ)
+        assert res.read().decode().startswith("JSON output is not supported for this request type")
+
+        self.log.info("Missing block data should cause REST API to fail")
+
+        self.test_rest_request(f"/block/{blockhash}", status=200, req_type=ReqType.BIN, ret_type=RetType.OBJ)
+        self.test_rest_request(f"/blockpart/{blockhash}", query_params={"offset": 0, "size": 1}, status=200, req_type=ReqType.BIN, ret_type=RetType.OBJ)
+        blk_files = list(self.nodes[0].blocks_path.glob("blk*.dat"))
+        for blk_file in blk_files:
+            blk_file.rename(blk_file.with_suffix('.bkp'))
+        self.test_rest_request(f"/block/{blockhash}", status=500, req_type=ReqType.BIN, ret_type=RetType.OBJ)
+        self.test_rest_request(f"/blockpart/{blockhash}", query_params={"offset": 0, "size": 1}, status=500, req_type=ReqType.BIN, ret_type=RetType.OBJ)
+        for blk_file in blk_files:
+            blk_file.with_suffix('.bkp').rename(blk_file)
 
         self.log.info("Test the /deploymentinfo URI")
 
@@ -471,6 +523,122 @@ class RESTTest (BitcoinTestFramework):
 
         resp = self.test_rest_request(f"/deploymentinfo/{INVALID_PARAM}", ret_type=RetType.OBJ, status=400)
         assert_equal(resp.read().decode('utf-8').rstrip(), f"Invalid hash: {INVALID_PARAM}")
+
+        self.log.info("Test Cache-Control headers on REST responses")
+
+        blockhash = self.nodes[0].getbestblockhash()
+        height = self.nodes[0].getblockcount()
+        immutable = "public, immutable, max-age=86400"
+        no_store = "no-store"
+
+        def assert_cache_control(
+            uri: str,
+            expected: str,
+            *,
+            req_type: typing.Optional[ReqType] = ReqType.JSON,
+            status: int = 200,
+            query_params: typing.Union[dict[str, typing.Any], str, None] = None,
+        ) -> bytes:
+            """Assert `uri` has expected Cache-Control and return the response body."""
+            response = self.test_rest_request(
+                uri,
+                req_type=req_type,
+                status=status,
+                ret_type=RetType.OBJ,
+                query_params=query_params,
+            )
+            assert isinstance(response, http.client.HTTPResponse)
+            assert_equal(response.getheader("Cache-Control"), expected)
+            return response.read()
+
+        # Immutable endpoints
+        immutable_block = assert_cache_control(f"/block/{blockhash}", immutable, req_type=ReqType.BIN)
+        immutable_spenttxouts = assert_cache_control(f"/spenttxouts/{blockhash}", immutable)
+        assert_cache_control(f"/spenttxouts/{blockhash}", immutable, req_type=ReqType.BIN)
+        assert_cache_control(f"/spenttxouts/{blockhash}", immutable, req_type=ReqType.HEX)
+        immutable_blockfilter = assert_cache_control(
+            f"/blockfilter/basic/{blockhash}", immutable, req_type=ReqType.JSON
+        )
+        assert_cache_control(f"/blockfilter/basic/{blockhash}", immutable, req_type=ReqType.BIN)
+        assert_cache_control(f"/blockfilter/basic/{blockhash}", immutable, req_type=ReqType.HEX)
+
+        # Mutable endpoints are not stored until validator support is available.
+        mutable_block = assert_cache_control(f"/block/{blockhash}", no_store)
+        assert_cache_control(f"/block/notxdetails/{blockhash}", no_store)
+        mutable_headers = assert_cache_control(
+            f"/headers/{blockhash}", no_store, req_type=ReqType.JSON, query_params={"count": 2}
+        )
+        assert_cache_control(f"/headers/{blockhash}", no_store, req_type=ReqType.BIN, query_params={"count": 1})
+        assert_cache_control(f"/headers/{blockhash}", no_store, req_type=ReqType.HEX, query_params={"count": 1})
+        assert_cache_control(f"/blockfilterheaders/basic/{blockhash}", no_store, req_type=ReqType.JSON, query_params={"count": 1})
+        assert_cache_control(f"/blockfilterheaders/basic/{blockhash}", no_store, req_type=ReqType.BIN, query_params={"count": 1})
+        assert_cache_control(f"/blockfilterheaders/basic/{blockhash}", no_store, req_type=ReqType.HEX, query_params={"count": 1})
+        assert_cache_control(f"/blockhashbyheight/{height}", no_store)
+        assert_cache_control(f"/blockhashbyheight/{height}", no_store, req_type=ReqType.BIN)
+        assert_cache_control(f"/blockhashbyheight/{height}", no_store, req_type=ReqType.HEX)
+
+        # Dynamic endpoints
+        mutable_chaininfo = assert_cache_control("/chaininfo", no_store)
+        assert_cache_control("/mempool/info", no_store)
+        mutable_deploymentinfo = assert_cache_control("/deploymentinfo", no_store)
+        immutable_deploymentinfo = assert_cache_control(f"/deploymentinfo/{blockhash}", immutable)
+
+        cache_tx = self.wallet.send_self_transfer(from_node=self.nodes[0])
+        mempool_txid = cache_tx["txid"]
+        cache_utxo = cache_tx["new_utxo"]
+        cache_utxo_path = f"/getutxos/{mempool_txid}-{cache_utxo['vout']}"
+
+        mempool_tx_response = assert_cache_control(f"/tx/{mempool_txid}", no_store, req_type=ReqType.JSON)
+        mempool_tx = json.loads(mempool_tx_response, parse_float=Decimal)
+        assert "blockhash" not in mempool_tx
+        assert_cache_control(f"/tx/{mempool_txid}", no_store, req_type=ReqType.BIN)
+        assert_cache_control(f"/tx/{mempool_txid}", no_store, req_type=ReqType.HEX)
+
+        self.generate(self.nodes[0], 1)
+        sync_txindex(self, self.nodes[0])
+
+        self.log.info("Test Cache-Control response behavior across a newly mined block")
+        assert_equal(immutable_block, assert_cache_control(f"/block/{blockhash}", immutable, req_type=ReqType.BIN))
+        assert_equal(immutable_spenttxouts, assert_cache_control(f"/spenttxouts/{blockhash}", immutable))
+        assert_equal(
+            immutable_blockfilter,
+            assert_cache_control(f"/blockfilter/basic/{blockhash}", immutable, req_type=ReqType.JSON),
+        )
+        assert_equal(immutable_deploymentinfo, assert_cache_control(f"/deploymentinfo/{blockhash}", immutable))
+
+        # no-store responses need not change after every block. Only compare responses
+        # that are guaranteed to incorporate this active chain extension.
+        assert_not_equal(mutable_block, assert_cache_control(f"/block/{blockhash}", no_store))
+        assert_not_equal(
+            mutable_headers,
+            assert_cache_control(f"/headers/{blockhash}", no_store, req_type=ReqType.JSON, query_params={"count": 2}),
+        )
+        assert_not_equal(mutable_chaininfo, assert_cache_control("/chaininfo", no_store))
+        assert_not_equal(mutable_deploymentinfo, assert_cache_control("/deploymentinfo", no_store))
+
+        confirmed_tx_response = assert_cache_control(f"/tx/{mempool_txid}", no_store, req_type=ReqType.JSON)
+        assert_not_equal(mempool_tx_response, confirmed_tx_response)
+        confirmed_tx = json.loads(confirmed_tx_response, parse_float=Decimal)
+        assert_equal(confirmed_tx["txid"], mempool_txid)
+        assert "blockhash" in confirmed_tx
+        assert_cache_control(f"/tx/{mempool_txid}", no_store, req_type=ReqType.BIN)
+        assert_cache_control(f"/tx/{mempool_txid}", no_store, req_type=ReqType.HEX)
+        assert_cache_control(cache_utxo_path, no_store, req_type=ReqType.JSON)
+        assert_cache_control(cache_utxo_path, no_store, req_type=ReqType.BIN)
+        assert_cache_control(cache_utxo_path, no_store, req_type=ReqType.HEX)
+
+        self.log.info("Test Cache-Control headers on REST error responses")
+        assert_cache_control(f"/block/{blockhash}.invalid", no_store, status=400, req_type=None)
+        assert_cache_control(f"/tx/{INVALID_PARAM}", no_store, status=400)
+        assert_cache_control(f"/deploymentinfo/{INVALID_PARAM}", no_store, status=400)
+        assert_cache_control("/blockhashbyheight/999999999", no_store, status=404)
+        assert_cache_control(f"/block/{UNKNOWN_PARAM}", no_store, status=404)
+        assert_cache_control(f"/tx/{'f' * 64}", no_store, status=404)
+        assert_cache_control("", no_store, status=404, query_params={"x": 1}, req_type=None)
+        assert_cache_control("/tx", no_store, status=404, req_type=None)
+        assert_cache_control("/does-not-exist", no_store, status=404, req_type=None)
+        assert_cache_control("/mempool/not-a-valid-path", no_store, status=400)
+        assert_cache_control(f"/deploymentinfo/{non_existing_blockhash}", no_store, status=400)
 
 if __name__ == '__main__':
     RESTTest(__file__).main()

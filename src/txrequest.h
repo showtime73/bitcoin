@@ -25,7 +25,7 @@
  * - Which peer announced it (through their NodeId)
  * - The txid or wtxid of the transaction (collectively called "txhash" in what follows)
  * - Whether it was a tx or wtx announcement (see BIP339).
- * - What the earliest permitted time is that that transaction can be requested from that peer (called "reqtime").
+ * - What the earliest permitted time is that the transaction can be requested from that peer (called "reqtime").
  * - Whether it's from a "preferred" peer or not. Which announcements get this flag is determined by the caller, but
  *   this is designed for outbound peers, or other peers that we have a higher level of trust in. Even when the
  *   peers' preferredness changes, the preferred flag of existing announcements from that peer won't change.
@@ -56,7 +56,7 @@
  *              cap on the number of tracked announcements per peer. As failed requests in response to announcements
  *              from honest peers should be rare, this almost solely hinders attackers.
  *              Transaction censoring attacks can be done by announcing transactions quickly while not answering
- *              requests for them. See https://allquantor.at/blockchainbib/pdf/miller2015topology.pdf for more
+ *              requests for them. See https://www.cs.umd.edu/projects/coinscope/coinscope.pdf for more
  *              information.
  *
  * - Transactions are not requested from a peer until its reqtime has passed.
@@ -164,7 +164,7 @@ public:
      *    simultaneously by one peer, and end up being requested from them, the requests will happen in announcement order.
      */
     std::vector<GenTxid> GetRequestable(NodeId peer, std::chrono::microseconds now,
-                                               std::vector<std::pair<NodeId, GenTxid>>* expired = nullptr);
+                                        std::vector<std::pair<NodeId, GenTxid>>* expired = nullptr);
 
     /** Marks a transaction as requested, with a specified expiry.
      *

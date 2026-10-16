@@ -159,9 +159,8 @@ struct KeyConverter {
     }
 
     //! Parse a public key from a range of hex characters.
-    template<typename I>
-    std::optional<Key> FromString(I first, I last) const {
-        auto bytes = ParseHex(std::string(first, last));
+    std::optional<Key> FromString(std::span<const char>& in) const {
+        auto bytes = ParseHex(std::string(in.begin(), in.end()));
         Key key{bytes.begin(), bytes.end()};
         if (key.IsValid()) return key;
         return {};
@@ -188,7 +187,7 @@ struct KeyConverter {
         return g_testdata->pkmap.at(keyid);
     }
 
-    std::optional<std::string> ToString(const Key& key) const {
+    std::optional<std::string> ToString(const Key& key, bool&) const {
         return HexStr(ToPKBytes(key));
     }
 
@@ -207,17 +206,17 @@ struct Satisfier : public KeyConverter {
 
     //! Implement simplified CLTV logic: stack value must exactly match an entry in `supported`.
     bool CheckAfter(uint32_t value) const {
-        return supported.count(Challenge(ChallengeType::AFTER, value));
+        return supported.contains(Challenge(ChallengeType::AFTER, value));
     }
 
     //! Implement simplified CSV logic: stack value must exactly match an entry in `supported`.
     bool CheckOlder(uint32_t value) const {
-        return supported.count(Challenge(ChallengeType::OLDER, value));
+        return supported.contains(Challenge(ChallengeType::OLDER, value));
     }
 
     //! Produce a signature for the given key.
     miniscript::Availability Sign(const CPubKey& key, std::vector<unsigned char>& sig) const {
-        if (supported.count(Challenge(ChallengeType::PK, ChallengeNumber(key)))) {
+        if (supported.contains(Challenge(ChallengeType::PK, ChallengeNumber(key)))) {
             if (!miniscript::IsTapscript(m_script_ctx)) {
                 auto it = g_testdata->signatures.find(key);
                 if (it == g_testdata->signatures.end()) return miniscript::Availability::NO;
@@ -234,7 +233,7 @@ struct Satisfier : public KeyConverter {
 
     //! Helper function for the various hash based satisfactions.
     miniscript::Availability SatHash(const std::vector<unsigned char>& hash, std::vector<unsigned char>& preimage, ChallengeType chtype) const {
-        if (!supported.count(Challenge(chtype, ChallengeNumber(hash)))) return miniscript::Availability::NO;
+        if (!supported.contains(Challenge(chtype, ChallengeNumber(hash)))) return miniscript::Availability::NO;
         const auto& m =
             chtype == ChallengeType::SHA256 ? g_testdata->sha256_preimages :
             chtype == ChallengeType::HASH256 ? g_testdata->hash256_preimages :
@@ -292,33 +291,32 @@ public:
 };
 
 using Fragment = miniscript::Fragment;
-using NodeRef = miniscript::NodeRef<CPubKey>;
 using miniscript::operator""_mst;
 using Node = miniscript::Node<CPubKey>;
 
 /** Compute all challenges (pubkeys, hashes, timelocks) that occur in a given Miniscript. */
-std::set<Challenge> FindChallenges(const Node* root)
+std::set<Challenge> FindChallenges(const Node& root)
 {
     std::set<Challenge> chal;
 
-    for (std::vector stack{root}; !stack.empty();) {
+    for (std::vector stack{&root}; !stack.empty();) {
         const auto* ref{stack.back()};
         stack.pop_back();
 
-        for (const auto& key : ref->keys) {
+        for (const auto& key : ref->Keys()) {
             chal.emplace(ChallengeType::PK, ChallengeNumber(key));
         }
-        switch (ref->fragment) {
-        case Fragment::OLDER: chal.emplace(ChallengeType::OLDER, ref->k); break;
-        case Fragment::AFTER: chal.emplace(ChallengeType::AFTER, ref->k); break;
-        case Fragment::SHA256: chal.emplace(ChallengeType::SHA256, ChallengeNumber(ref->data)); break;
-        case Fragment::RIPEMD160: chal.emplace(ChallengeType::RIPEMD160, ChallengeNumber(ref->data)); break;
-        case Fragment::HASH256: chal.emplace(ChallengeType::HASH256, ChallengeNumber(ref->data)); break;
-        case Fragment::HASH160: chal.emplace(ChallengeType::HASH160, ChallengeNumber(ref->data)); break;
+        switch (ref->Fragment()) {
+        case Fragment::OLDER: chal.emplace(ChallengeType::OLDER, ref->K()); break;
+        case Fragment::AFTER: chal.emplace(ChallengeType::AFTER, ref->K()); break;
+        case Fragment::SHA256: chal.emplace(ChallengeType::SHA256, ChallengeNumber(ref->Data())); break;
+        case Fragment::RIPEMD160: chal.emplace(ChallengeType::RIPEMD160, ChallengeNumber(ref->Data())); break;
+        case Fragment::HASH256: chal.emplace(ChallengeType::HASH256, ChallengeNumber(ref->Data())); break;
+        case Fragment::HASH160: chal.emplace(ChallengeType::HASH160, ChallengeNumber(ref->Data())); break;
         default: break;
         }
-        for (const auto& sub : ref->subs) {
-            stack.push_back(sub.get());
+        for (const auto& sub : ref->Subs()) {
+            stack.push_back(&sub);
         }
     }
     return chal;
@@ -346,9 +344,10 @@ void SatisfactionToWitness(miniscript::MiniscriptContext ctx, CScriptWitness& wi
 
 struct MiniScriptTest : BasicTestingSetup {
 /** Run random satisfaction tests. */
-void TestSatisfy(const KeyConverter& converter, const std::string& testcase, const NodeRef& node) {
-    auto script = node->ToScript(converter);
-    const auto challenges{FindChallenges(node.get())}; // Find all challenges in the generated miniscript.
+void TestSatisfy(const KeyConverter& converter, const Node& node)
+{
+    auto script = node.ToScript(converter);
+    const auto challenges{FindChallenges(node)}; // Find all challenges in the generated miniscript.
     std::vector<Challenge> challist(challenges.begin(), challenges.end());
     for (int iter = 0; iter < 3; ++iter) {
         std::shuffle(challist.begin(), challist.end(), m_rng);
@@ -365,37 +364,37 @@ void TestSatisfy(const KeyConverter& converter, const std::string& testcase, con
 
             // Run malleable satisfaction algorithm.
             CScriptWitness witness_mal;
-            const bool mal_success = node->Satisfy(satisfier, witness_mal.stack, false) == miniscript::Availability::YES;
+            const bool mal_success = node.Satisfy(satisfier, witness_mal.stack, false) == miniscript::Availability::YES;
             SatisfactionToWitness(converter.MsContext(), witness_mal, script, builder);
 
             // Run non-malleable satisfaction algorithm.
             CScriptWitness witness_nonmal;
-            const bool nonmal_success = node->Satisfy(satisfier, witness_nonmal.stack, true) == miniscript::Availability::YES;
+            const bool nonmal_success = node.Satisfy(satisfier, witness_nonmal.stack, true) == miniscript::Availability::YES;
             // Compute witness size (excluding script push, control block, and witness count encoding).
-            const size_t wit_size = GetSerializeSize(witness_nonmal.stack) - GetSizeOfCompactSize(witness_nonmal.stack.size());
+            const uint64_t wit_size{GetSerializeSize(witness_nonmal.stack) - GetSizeOfCompactSize(witness_nonmal.stack.size())};
             SatisfactionToWitness(converter.MsContext(), witness_nonmal, script, builder);
 
             if (nonmal_success) {
                 // Non-malleable satisfactions are bounded by the satisfaction size plus:
                 // - For P2WSH spends, the witness script
                 // - For Tapscript spends, both the witness script and the control block
-                const size_t max_stack_size{*node->GetStackSize() + 1 + miniscript::IsTapscript(converter.MsContext())};
+                const size_t max_stack_size{*node.GetStackSize() + 1 + miniscript::IsTapscript(converter.MsContext())};
                 BOOST_CHECK(witness_nonmal.stack.size() <= max_stack_size);
                 // If a non-malleable satisfaction exists, the malleable one must also exist, and be identical to it.
                 BOOST_CHECK(mal_success);
                 BOOST_CHECK(witness_nonmal.stack == witness_mal.stack);
-                assert(wit_size <= *node->GetWitnessSize());
+                assert(wit_size <= *node.GetWitnessSize());
 
                 // Test non-malleable satisfaction.
                 ScriptError serror;
                 bool res = VerifyScript(CScript(), script_pubkey, &witness_nonmal, STANDARD_SCRIPT_VERIFY_FLAGS, checker, &serror);
                 // Non-malleable satisfactions are guaranteed to be valid if ValidSatisfactions().
-                if (node->ValidSatisfactions()) BOOST_CHECK(res);
+                if (node.ValidSatisfactions()) BOOST_CHECK(res);
                 // More detailed: non-malleable satisfactions must be valid, or could fail with ops count error (if CheckOpsLimit failed),
                 // or with a stack size error (if CheckStackSize check fails).
                 BOOST_CHECK(res ||
-                            (!node->CheckOpsLimit() && serror == ScriptError::SCRIPT_ERR_OP_COUNT) ||
-                            (!node->CheckStackSize() && serror == ScriptError::SCRIPT_ERR_STACK_SIZE));
+                            (!node.CheckOpsLimit() && serror == ScriptError::SCRIPT_ERR_OP_COUNT) ||
+                            (!node.CheckStackSize() && serror == ScriptError::SCRIPT_ERR_STACK_SIZE));
             }
 
             if (mal_success && (!nonmal_success || witness_mal.stack != witness_nonmal.stack)) {
@@ -407,7 +406,7 @@ void TestSatisfy(const KeyConverter& converter, const std::string& testcase, con
                 BOOST_CHECK(res || serror == ScriptError::SCRIPT_ERR_OP_COUNT || serror == ScriptError::SCRIPT_ERR_STACK_SIZE);
             }
 
-            if (node->IsSane()) {
+            if (node.IsSane()) {
                 // For sane nodes, the two algorithms behave identically.
                 BOOST_CHECK_EQUAL(mal_success, nonmal_success);
             }
@@ -417,7 +416,7 @@ void TestSatisfy(const KeyConverter& converter, const std::string& testcase, con
             // For nonmalleable solutions this is only true if the added condition is PK;
             // for other conditions, adding one may make an valid satisfaction become malleable. If the script
             // is sane, this cannot happen however.
-            if (node->IsSane() || add < 0 || challist[add].first == ChallengeType::PK) {
+            if (node.IsSane() || add < 0 || challist[add].first == ChallengeType::PK) {
                 BOOST_CHECK(nonmal_success >= prev_nonmal_success);
             }
             // Remember results for the next added challenge.
@@ -425,11 +424,11 @@ void TestSatisfy(const KeyConverter& converter, const std::string& testcase, con
             prev_nonmal_success = nonmal_success;
         }
 
-        bool satisfiable = node->IsSatisfiable([](const Node&) { return true; });
+        bool satisfiable = node.IsSatisfiable([](const Node&) { return true; });
         // If the miniscript was satisfiable at all, a satisfaction must be found after all conditions are added.
         BOOST_CHECK_EQUAL(prev_mal_success, satisfiable);
         // If the miniscript is sane and satisfiable, a nonmalleable satisfaction must eventually be found.
-        if (node->IsSane()) BOOST_CHECK_EQUAL(prev_nonmal_success, satisfiable);
+        if (node.IsSane()) BOOST_CHECK_EQUAL(prev_nonmal_success, satisfiable);
     }
 }
 
@@ -472,7 +471,7 @@ void Test(const std::string& ms, const std::string& hexscript, int mode, const K
         if (stacklimit != -1) BOOST_CHECK_MESSAGE((int)*node->GetStackSize() == stacklimit, "Stack limit mismatch: " << ms << " (" << *node->GetStackSize() << " vs " << stacklimit << ")");
         if (max_wit_size) BOOST_CHECK_MESSAGE(*node->GetWitnessSize() == *max_wit_size, "Witness size limit mismatch: " << ms << " (" << *node->GetWitnessSize() << " vs " << *max_wit_size << ")");
         if (stack_exec) BOOST_CHECK_MESSAGE(*node->GetExecStackSize() == *stack_exec, "Stack execution limit mismatch: " << ms << " (" << *node->GetExecStackSize() << " vs " << *stack_exec << ")");
-        TestSatisfy(converter, ms, node);
+        TestSatisfy(converter, *node);
     }
 }
 
@@ -600,11 +599,11 @@ BOOST_AUTO_TEST_CASE(fixed_tests)
     constexpr KeyConverter tap_converter{miniscript::MiniscriptContext::TAPSCRIPT};
     constexpr KeyConverter wsh_converter{miniscript::MiniscriptContext::P2WSH};
     const auto no_pubkey{"ac519c"_hex_u8};
-    BOOST_CHECK(miniscript::FromScript({no_pubkey.begin(), no_pubkey.end()}, tap_converter) == nullptr);
+    BOOST_CHECK(miniscript::FromScript({no_pubkey.begin(), no_pubkey.end()}, tap_converter) == std::nullopt);
     const auto incomplete_multi_a{"ba20c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5ba519c"_hex_u8};
-    BOOST_CHECK(miniscript::FromScript({incomplete_multi_a.begin(), incomplete_multi_a.end()}, tap_converter) == nullptr);
+    BOOST_CHECK(miniscript::FromScript({incomplete_multi_a.begin(), incomplete_multi_a.end()}, tap_converter) == std::nullopt);
     const auto incomplete_multi_a_2{"ac2079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ac20c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5ba519c"_hex_u8};
-    BOOST_CHECK(miniscript::FromScript({incomplete_multi_a_2.begin(), incomplete_multi_a_2.end()}, tap_converter) == nullptr);
+    BOOST_CHECK(miniscript::FromScript({incomplete_multi_a_2.begin(), incomplete_multi_a_2.end()}, tap_converter) == std::nullopt);
     // Can use multi_a under Tapscript but not P2WSH.
     Test("and_v(v:multi_a(2,03d01115d548e7561b15c38f004d734633687cf4419620095bc5b0f47070afe85a,025601570cb47f238d2b0286db4a990fa0f3ba28d1a319f5e7cf55c2a2444da7cc),after(1231488000))", "?", "20d01115d548e7561b15c38f004d734633687cf4419620095bc5b0f47070afe85aac205601570cb47f238d2b0286db4a990fa0f3ba28d1a319f5e7cf55c2a2444da7ccba529d0400046749b1", TESTMODE_VALID | TESTMODE_NONMAL | TESTMODE_NEEDSIG | TESTMODE_P2WSH_INVALID, 4, 2, {}, {}, 3);
     // Can use more than 20 keys in a multi_a.
@@ -637,26 +636,28 @@ BOOST_AUTO_TEST_CASE(fixed_tests)
     ms_stack_limit += "pk(" + HexStr(g_testdata->pubkeys[0]) + ")";
     ms_stack_limit.insert(ms_stack_limit.end(), count, ')');
     const auto ms_stack_ok{miniscript::FromString(ms_stack_limit, tap_converter)};
-    BOOST_CHECK(ms_stack_ok && ms_stack_ok->CheckStackSize());
+    BOOST_REQUIRE(ms_stack_ok);
+    BOOST_CHECK(ms_stack_ok->CheckStackSize());
     Test(ms_stack_limit, "?", "?", TESTMODE_VALID | TESTMODE_NONMAL | TESTMODE_NEEDSIG | TESTMODE_P2WSH_INVALID, 4 * count + 1, 1, {}, {}, 1 + count + 1);
     // But one more element on the stack during execution will make it fail. And we'd detect that.
     count++;
     ms_stack_limit = "and_b(older(1),a:" + ms_stack_limit + ")";
     const auto ms_stack_nok{miniscript::FromString(ms_stack_limit, tap_converter)};
-    BOOST_CHECK(ms_stack_nok && !ms_stack_nok->CheckStackSize());
+    BOOST_REQUIRE(ms_stack_nok);
+    BOOST_CHECK(!ms_stack_nok->CheckStackSize());
     Test(ms_stack_limit, "?", "?", TESTMODE_VALID | TESTMODE_NONMAL | TESTMODE_NEEDSIG | TESTMODE_P2WSH_INVALID, 4 * count + 1, 1, {}, {}, 1 + count + 1);
 
     // Misc unit tests
     // A Script with a non minimal push is invalid
     constexpr auto nonminpush{"0000210232780000feff00ffffffffffff21ff005f00ae21ae00000000060602060406564c2102320000060900fe00005f00ae21ae00100000060606060606000000000000000000000000000000000000000000000000000000000000000000"_hex_u8};
     const CScript nonminpush_script(nonminpush.begin(), nonminpush.end());
-    BOOST_CHECK(miniscript::FromScript(nonminpush_script, wsh_converter) == nullptr);
-    BOOST_CHECK(miniscript::FromScript(nonminpush_script, tap_converter) == nullptr);
+    BOOST_CHECK(miniscript::FromScript(nonminpush_script, wsh_converter) == std::nullopt);
+    BOOST_CHECK(miniscript::FromScript(nonminpush_script, tap_converter) == std::nullopt);
     // A non-minimal VERIFY (<key> CHECKSIG VERIFY 1)
     constexpr auto nonminverify{"2103a0434d9e47f3c86235477c7b1ae6ae5d3442d49b1943c2b752a68e2a47e247c7ac6951"_hex_u8};
     const CScript nonminverify_script(nonminverify.begin(), nonminverify.end());
-    BOOST_CHECK(miniscript::FromScript(nonminverify_script, wsh_converter) == nullptr);
-    BOOST_CHECK(miniscript::FromScript(nonminverify_script, tap_converter) == nullptr);
+    BOOST_CHECK(miniscript::FromScript(nonminverify_script, wsh_converter) == std::nullopt);
+    BOOST_CHECK(miniscript::FromScript(nonminverify_script, tap_converter) == std::nullopt);
     // A threshold as large as the number of subs is valid.
     Test("thresh(2,c:pk_k(03d30199d74fb5a22d47b6e054e2f378cedacffcb89904a61d75d0dbd407143e65),altv:after(100))", "2103d30199d74fb5a22d47b6e054e2f378cedacffcb89904a61d75d0dbd407143e65ac6b6300670164b16951686c935287", "20d30199d74fb5a22d47b6e054e2f378cedacffcb89904a61d75d0dbd407143e65ac6b6300670164b16951686c935287", TESTMODE_VALID | TESTMODE_NEEDSIG | TESTMODE_NONMAL);
     // A threshold of 1 is valid.
@@ -678,32 +679,45 @@ BOOST_AUTO_TEST_CASE(fixed_tests)
     // (for now) have 'd:' be 'u'. This tests we can't use a 'd:' wrapper for a thresh, which requires
     // its subs to all be 'u' (taken from https://github.com/rust-bitcoin/rust-miniscript/discussions/341).
     const auto ms_minimalif = miniscript::FromString("thresh(3,c:pk_k(03d30199d74fb5a22d47b6e054e2f378cedacffcb89904a61d75d0dbd407143e65),sc:pk_k(03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556),sc:pk_k(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798),sdv:older(32))", wsh_converter);
-    BOOST_CHECK(ms_minimalif && !ms_minimalif->IsValid());
+    BOOST_REQUIRE(ms_minimalif);
+    BOOST_CHECK(!ms_minimalif->IsValid());
     // A Miniscript with duplicate keys is not sane
     const auto ms_dup1 = miniscript::FromString("and_v(v:pk(03d30199d74fb5a22d47b6e054e2f378cedacffcb89904a61d75d0dbd407143e65),pk(03d30199d74fb5a22d47b6e054e2f378cedacffcb89904a61d75d0dbd407143e65))", wsh_converter);
-    BOOST_CHECK(ms_dup1);
-    BOOST_CHECK(!ms_dup1->IsSane() && !ms_dup1->CheckDuplicateKey());
+    BOOST_REQUIRE(ms_dup1);
+    BOOST_CHECK(!ms_dup1->IsSane());
+    BOOST_CHECK(!ms_dup1->CheckDuplicateKey());
     // Same with a disjunction, and different key nodes (pk and pkh)
     const auto ms_dup2 = miniscript::FromString("or_b(c:pk_k(03d30199d74fb5a22d47b6e054e2f378cedacffcb89904a61d75d0dbd407143e65),ac:pk_h(03d30199d74fb5a22d47b6e054e2f378cedacffcb89904a61d75d0dbd407143e65))", wsh_converter);
-    BOOST_CHECK(ms_dup2 && !ms_dup2->IsSane() && !ms_dup2->CheckDuplicateKey());
+    BOOST_REQUIRE(ms_dup2);
+    BOOST_CHECK(!ms_dup2->IsSane());
+    BOOST_CHECK(!ms_dup2->CheckDuplicateKey());
     // Same when the duplicates are leaves or a larger tree
     const auto ms_dup3 = miniscript::FromString("or_i(and_b(pk(03d30199d74fb5a22d47b6e054e2f378cedacffcb89904a61d75d0dbd407143e65),s:pk(03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556)),and_b(older(1),s:pk(03d30199d74fb5a22d47b6e054e2f378cedacffcb89904a61d75d0dbd407143e65)))", wsh_converter);
-    BOOST_CHECK(ms_dup3 && !ms_dup3->IsSane() && !ms_dup3->CheckDuplicateKey());
+    BOOST_REQUIRE(ms_dup3);
+    BOOST_CHECK(!ms_dup3->IsSane());
+    BOOST_CHECK(!ms_dup3->CheckDuplicateKey());
     // Same when the duplicates are on different levels in the tree
     const auto ms_dup4 = miniscript::FromString("thresh(2,pkh(03d30199d74fb5a22d47b6e054e2f378cedacffcb89904a61d75d0dbd407143e65),s:pk(03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556),a:and_b(dv:older(1),s:pk(03d30199d74fb5a22d47b6e054e2f378cedacffcb89904a61d75d0dbd407143e65)))", wsh_converter);
-    BOOST_CHECK(ms_dup4 && !ms_dup4->IsSane() && !ms_dup4->CheckDuplicateKey());
+    BOOST_REQUIRE(ms_dup4);
+    BOOST_CHECK(!ms_dup4->IsSane());
+    BOOST_CHECK(!ms_dup4->CheckDuplicateKey());
     // Sanity check the opposite is true, too. An otherwise sane Miniscript with no duplicate keys is sane.
     const auto ms_nondup = miniscript::FromString("pk(03d30199d74fb5a22d47b6e054e2f378cedacffcb89904a61d75d0dbd407143e65)", wsh_converter);
-    BOOST_CHECK(ms_nondup && ms_nondup->CheckDuplicateKey() && ms_nondup->IsSane());
+    BOOST_REQUIRE(ms_nondup);
+    BOOST_CHECK(ms_nondup->CheckDuplicateKey());
+    BOOST_CHECK(ms_nondup->IsSane());
     // Test we find the first insane sub closer to be a leaf node. This fragment is insane for two reasons:
     // 1. It can be spent without a signature
     // 2. It contains timelock mixes
     // We'll report the timelock mix error, as it's "deeper" (closer to be a leaf node) than the "no 's' property"
     // error is.
     const auto ms_ins = miniscript::FromString("or_i(and_b(after(1),a:after(1000000000)),pk(03cdabb7f2dce7bfbd8a0b9570c6fd1e712e5d64045e9d6b517b3d5072251dc204))", wsh_converter);
-    BOOST_CHECK(ms_ins && ms_ins->IsValid() && !ms_ins->IsSane());
+    BOOST_REQUIRE(ms_ins);
+    BOOST_CHECK(ms_ins->IsValid());
+    BOOST_CHECK(!ms_ins->IsSane());
     const auto insane_sub = ms_ins->FindInsaneSub();
-    BOOST_CHECK(insane_sub && *insane_sub->ToString(wsh_converter) == "and_b(after(1),a:after(1000000000))");
+    BOOST_REQUIRE(insane_sub);
+    BOOST_CHECK(*insane_sub->ToString(wsh_converter) == "and_b(after(1),a:after(1000000000))");
 
     // Numbers can't be prefixed by a sign.
     BOOST_CHECK(!miniscript::FromString("after(-1)", wsh_converter));
@@ -725,6 +739,42 @@ BOOST_AUTO_TEST_CASE(fixed_tests)
     Test("thresh(1,c:pk_k(03d30199d74fb5a22d47b6e054e2f378cedacffcb89904a61d75d0dbd407143e65),altv:after(1000000000),altv:after(100))", "?", "?", TESTMODE_VALID); // thresh with k = 1
 
     g_testdata.reset();
+}
+
+// Confirm that ~Node(), Node::Clone() and operator=(Node&&) are stack-safe.
+BOOST_AUTO_TEST_CASE(node_stress_stack)
+{
+    using miniscript::internal::NoDupCheck;
+    using miniscript::Fragment;
+    using NodeU32 = miniscript::Node<uint32_t>;
+
+    const auto compute_depth{[] (const NodeU32& node) -> size_t {
+        size_t depth{0};
+        for (const auto* n{&node}; !n->Subs().empty(); n = &n->Subs().front()) {
+            ++depth;
+        }
+        return depth;
+    }};
+
+    constexpr auto ctx{miniscript::MiniscriptContext::TAPSCRIPT};
+    NodeU32 root{NoDupCheck{}, ctx, Fragment::JUST_1};
+    // Some CI jobs run with CI_LIMIT_STACK_SIZE which reduces the stack size
+    // via ulimit to 512 kbytes. When tested with ~Node()=default (stack-unsafe)
+    // implementations the test has been shown to fail for the below depth.
+    // The test may pass locally despite stack-unsafe implementations unless the
+    // stack is reduced in a similar way or the depth is temporarily increased.
+    constexpr size_t depth{200'000};
+    for (size_t i{0}; i < depth; ++i) {
+        root = NodeU32{NoDupCheck{}, ctx, Fragment::WRAP_N, Vector(std::move(root))};
+    }
+    BOOST_CHECK(root.IsValid());
+    BOOST_CHECK_EQUAL(compute_depth(root), depth);
+
+    auto clone{root.Clone()};
+    BOOST_CHECK_EQUAL(compute_depth(clone), depth);
+
+    clone = std::move(root);
+    BOOST_CHECK_EQUAL(compute_depth(clone), depth);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -199,19 +199,10 @@ FUZZ_TARGET(muhash)
         },
         [&] {
             // Test that dividing a MuHash by itself brings it back to its initial state
-
-            // See note about clang + self-assignment in test/uint256_tests.cpp
-            #if defined(__clang__)
-            #    pragma clang diagnostic push
-            #    pragma clang diagnostic ignored "-Wself-assign-overloaded"
-            #endif
-
+            // Insert only multiplies the numerator, so without the Remove the denominator
+            // is still 1 and the division is trivially correct
+            muhash.Remove(data);
             muhash /= muhash;
-
-            #if defined(__clang__)
-            #    pragma clang diagnostic pop
-            #endif
-
             muhash.Finalize(out);
             out2 = initial_state_hash;
         },

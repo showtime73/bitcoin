@@ -1,4 +1,4 @@
-// Copyright (c) 2011-2022 The Bitcoin Core developers
+// Copyright (c) 2011-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -41,8 +41,6 @@
 #include <util/translation.h>
 #include <validation.h>
 
-#include <functional>
-
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
@@ -71,6 +69,14 @@
 #include <QVBoxLayout>
 #include <QWindow>
 
+
+/**
+ * Maximum gap between node time and block time used
+ * for the "Catching up..." mode in GUI.
+ *
+ * Ref: https://github.com/bitcoin/bitcoin/pull/1026
+ */
+static constexpr int64_t MAX_BLOCK_TIME_GAP = 90 * 60;
 
 const std::string BitcoinGUI::DEFAULT_UIPLATFORM =
 #if defined(Q_OS_MACOS)
@@ -371,6 +377,10 @@ void BitcoinGUI::createActions()
     m_mask_values_action->setStatusTip(tr("Mask the values in the Overview tab"));
     m_mask_values_action->setCheckable(true);
 
+    m_export_watchonly_action = new QAction(tr("Export watch-only wallet"), this);
+    m_export_watchonly_action->setEnabled(false);
+    m_export_watchonly_action->setStatusTip(tr("Export a watch-only version of the current wallet that can be restored onto another node."));
+
     connect(quitAction, &QAction::triggered, this, &BitcoinGUI::quitRequested);
     connect(aboutAction, &QAction::triggered, this, &BitcoinGUI::aboutClicked);
     connect(aboutQtAction, &QAction::triggered, qApp, QApplication::aboutQt);
@@ -434,7 +444,7 @@ void BitcoinGUI::createActions()
             //: The title for Restore Wallet File Windows
             QString title_windows = tr("Load Wallet Backup");
 
-            QString backup_file = GUIUtil::getOpenFileName(this, title_windows, QString(), name_data_file + QLatin1String(" (*.dat)"), nullptr);
+            QString backup_file = GUIUtil::getOpenFileName(this, title_windows, QString(), name_data_file +  QLatin1String(" (*.dat *.wallet);;") + tr("All Files") + QLatin1String(" (*)"), nullptr);
             if (backup_file.isEmpty()) return;
 
             bool wallet_name_ok;
@@ -444,7 +454,11 @@ void BitcoinGUI::createActions()
             //: Label of the input field where the name of the wallet is entered.
             QString label = tr("Wallet Name");
             QString wallet_name = QInputDialog::getText(this, title, label, QLineEdit::Normal, "", &wallet_name_ok);
-            if (!wallet_name_ok || wallet_name.isEmpty()) return;
+            if (!wallet_name_ok) return;
+            if (wallet_name.isEmpty()) {
+                QMessageBox::critical(nullptr, tr("Invalid Wallet Name"), tr("Wallet name cannot be empty"));
+                return;
+            }
 
             auto activity = new RestoreWalletActivity(m_wallet_controller, this);
             connect(activity, &RestoreWalletActivity::restored, this, &BitcoinGUI::setCurrentWallet, Qt::QueuedConnection);
@@ -485,9 +499,51 @@ void BitcoinGUI::createActions()
                 QAction* action = m_migrate_wallet_menu->addAction(tr("No wallets available"));
                 action->setEnabled(false);
             }
+            m_migrate_wallet_menu->addSeparator();
+            QAction* restore_migrate_file_action = m_migrate_wallet_menu->addAction(tr("Restore and Migrate Wallet File…"));
+            restore_migrate_file_action->setEnabled(true);
+
+            connect(restore_migrate_file_action, &QAction::triggered, [this] {
+                QString name_data_file = tr("Wallet Data");
+                QString title_windows = tr("Restore and Migrate Wallet Backup");
+
+                QString backup_file = GUIUtil::getOpenFileName(this, title_windows, QString(), name_data_file + QLatin1String(" (*.dat)"), nullptr);
+                if (backup_file.isEmpty()) return;
+
+                bool wallet_name_ok;
+                /*: Title of pop-up window shown when the user is attempting to
+                    restore a wallet. */
+                QString title = tr("Restore and Migrate Wallet");
+                //: Label of the input field where the name of the wallet is entered.
+                QString label = tr("Wallet Name");
+                QString wallet_name = QInputDialog::getText(this, title, label, QLineEdit::Normal, "", &wallet_name_ok);
+                if (!wallet_name_ok || wallet_name.isEmpty()) return;
+
+                auto activity = new MigrateWalletActivity(m_wallet_controller, this);
+                connect(activity, &MigrateWalletActivity::migrated, this, &BitcoinGUI::setCurrentWallet);
+                connect(activity, &MigrateWalletActivity::migrated, rpcConsole, &RPCConsole::setCurrentWallet);
+                auto backup_file_path = fs::PathFromString(backup_file.toStdString());
+                activity->restore_and_migrate(backup_file_path, wallet_name.toStdString());
+            });
         });
         connect(m_mask_values_action, &QAction::toggled, this, &BitcoinGUI::setPrivacy);
         connect(m_mask_values_action, &QAction::toggled, this, &BitcoinGUI::enableHistoryAction);
+        GUIUtil::ExceptionSafeConnect(m_export_watchonly_action, &QAction::triggered, [this](bool) {
+            QString destination = GUIUtil::getSaveFileName(this,
+                tr("Save Watch-only Wallet Export"), QString(),
+                //: Name of the wallet data file format.
+                tr("Wallet Data") + QLatin1String(" (*.dat)"), nullptr);
+
+            if (destination.isEmpty()) return;
+            WalletModel* model = walletFrame->currentWalletModel();
+            if (!Assume(model)) return;
+            util::Result<std::string> export_res = model->wallet().exportWatchOnlyWallet(GUIUtil::QStringToPath(destination));
+            if (export_res) {
+                QMessageBox::information(nullptr, tr("Export Successful"), tr("The wallet has been exported to ") + QString::fromStdString(*export_res));
+            } else {
+                QMessageBox::critical(nullptr, tr("Export Error"), QString::fromStdString(util::ErrorString(export_res).translated));
+            }
+        });
     }
 #endif // ENABLE_WALLET
 
@@ -511,6 +567,7 @@ void BitcoinGUI::createMenuBar()
         file->addSeparator();
         file->addAction(backupWalletAction);
         file->addAction(m_restore_wallet_action);
+        file->addAction(m_export_watchonly_action);
         file->addSeparator();
         file->addAction(openAction);
         file->addAction(signMessageAction);
@@ -760,9 +817,7 @@ void BitcoinGUI::addWallet(WalletModel* walletModel)
     connect(wallet_view, &WalletView::encryptionStatusChanged, this, &BitcoinGUI::updateWalletStatus);
     connect(wallet_view, &WalletView::incomingTransaction, this, &BitcoinGUI::incomingTransaction);
     connect(this, &BitcoinGUI::setPrivacy, wallet_view, &WalletView::setPrivacy);
-    const bool privacy = isPrivacyModeActivated();
-    wallet_view->setPrivacy(privacy);
-    enableHistoryAction(privacy);
+    wallet_view->setPrivacy(isPrivacyModeActivated());
     const QString display_name = walletModel->getDisplayName();
     m_wallet_selector->addItem(display_name, QVariant::fromValue(walletModel));
 }
@@ -798,6 +853,7 @@ void BitcoinGUI::setCurrentWallet(WalletModel* wallet_model)
             break;
         }
     }
+    m_export_watchonly_action->setEnabled(!wallet_model->wallet().privateKeysDisabled());
     updateWindowTitle();
 }
 
@@ -821,7 +877,7 @@ void BitcoinGUI::setWalletActionsEnabled(bool enabled)
     overviewAction->setEnabled(enabled);
     sendCoinsAction->setEnabled(enabled);
     receiveCoinsAction->setEnabled(enabled);
-    historyAction->setEnabled(enabled);
+    historyAction->setEnabled(enabled && !isPrivacyModeActivated());
     encryptWalletAction->setEnabled(enabled);
     backupWalletAction->setEnabled(enabled);
     changePassphraseAction->setEnabled(enabled);
@@ -832,6 +888,7 @@ void BitcoinGUI::setWalletActionsEnabled(bool enabled)
     openAction->setEnabled(enabled);
     m_close_wallet_action->setEnabled(enabled);
     m_close_all_wallets_action->setEnabled(enabled);
+    m_export_watchonly_action->setEnabled(enabled);
 }
 
 void BitcoinGUI::createTrayIcon()
@@ -1555,7 +1612,7 @@ void BitcoinGUI::showModalOverlay()
         modalOverlay->toggleVisibility();
 }
 
-static bool ThreadSafeMessageBox(BitcoinGUI* gui, const bilingual_str& message, const std::string& caption, unsigned int style)
+[[nodiscard]] static bool ThreadSafeMessageBox(BitcoinGUI* gui, const bilingual_str& message, unsigned int style)
 {
     bool modal = (style & CClientUIInterface::MODAL);
     // The SECURE flag has no effect in the Qt GUI.
@@ -1567,11 +1624,14 @@ static bool ThreadSafeMessageBox(BitcoinGUI* gui, const bilingual_str& message, 
     if (message.original != message.translated) {
         detailed_message = BitcoinGUI::tr("Original message:") + "\n" + QString::fromStdString(message.original);
     }
+    // The title is empty for node messages. The fallback title is usually set
+    // by `style`.
+    const QString title{};
 
     // In case of modal message, use blocking connection to wait for user to click a button
     bool invoked = QMetaObject::invokeMethod(gui, "message",
                                modal ? GUIUtil::blockingGUIThreadConnection() : Qt::QueuedConnection,
-                               Q_ARG(QString, QString::fromStdString(caption)),
+                               Q_ARG(QString, title),
                                Q_ARG(QString, QString::fromStdString(message.translated)),
                                Q_ARG(unsigned int, style),
                                Q_ARG(bool*, &ret),
@@ -1583,8 +1643,12 @@ static bool ThreadSafeMessageBox(BitcoinGUI* gui, const bilingual_str& message, 
 void BitcoinGUI::subscribeToCoreSignals()
 {
     // Connect signals to client
-    m_handler_message_box = m_node.handleMessageBox(std::bind(ThreadSafeMessageBox, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
-    m_handler_question = m_node.handleQuestion(std::bind(ThreadSafeMessageBox, this, std::placeholders::_1, std::placeholders::_3, std::placeholders::_4));
+    m_handler_message_box = m_node.handleMessageBox([this](const bilingual_str& message, unsigned int style) {
+        (void)ThreadSafeMessageBox(this, message, style);
+    });
+    m_handler_question = m_node.handleQuestion([this](const bilingual_str& message, const std::string& /*non_interactive_message*/, unsigned int style) {
+        return ThreadSafeMessageBox(this, message, style);
+    });
 }
 
 void BitcoinGUI::unsubscribeFromCoreSignals()
@@ -1680,3 +1744,5 @@ void UnitDisplayStatusBarControl::onMenuSelection(QAction* action)
         optionsModel->setDisplayUnit(action->data());
     }
 }
+
+#include <moc_bitcoingui.cpp>

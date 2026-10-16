@@ -1,4 +1,4 @@
-// Copyright (c) 2012-2022 The Bitcoin Core developers
+// Copyright (c) 2012-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -23,7 +23,7 @@ static void microTask(CScheduler& s, std::mutex& mutex, int& counter, int delta,
     }
     auto noTime = std::chrono::steady_clock::time_point::min();
     if (rescheduleTime != noTime) {
-        CScheduler::Function f = std::bind(&microTask, std::ref(s), std::ref(mutex), std::ref(counter), -delta + 1, noTime);
+        CScheduler::Function f = std::bind_front(&microTask, std::ref(s), std::ref(mutex), std::ref(counter), -delta + 1, noTime);
         s.schedule(f, rescheduleTime);
     }
 }
@@ -59,7 +59,7 @@ BOOST_AUTO_TEST_CASE(manythreads)
         auto t = now + std::chrono::microseconds(randomMsec(rng));
         auto tReschedule = now + std::chrono::microseconds(500 + randomMsec(rng));
         int whichCounter = zeroToNine(rng);
-        CScheduler::Function f = std::bind(&microTask, std::ref(microTasks),
+        CScheduler::Function f = std::bind_front(&microTask, std::ref(microTasks),
                                              std::ref(counterMutex[whichCounter]), std::ref(counter[whichCounter]),
                                              randomDelta(rng), tReschedule);
         microTasks.schedule(f, t);
@@ -73,19 +73,19 @@ BOOST_AUTO_TEST_CASE(manythreads)
     std::vector<std::thread> microThreads;
     microThreads.reserve(10);
     for (int i = 0; i < 5; i++)
-        microThreads.emplace_back(std::bind(&CScheduler::serviceQueue, &microTasks));
+        microThreads.emplace_back(std::bind_front(&CScheduler::serviceQueue, &microTasks));
 
     UninterruptibleSleep(std::chrono::microseconds{600});
     now = std::chrono::steady_clock::now();
 
     // More threads and more tasks:
     for (int i = 0; i < 5; i++)
-        microThreads.emplace_back(std::bind(&CScheduler::serviceQueue, &microTasks));
+        microThreads.emplace_back(std::bind_front(&CScheduler::serviceQueue, &microTasks));
     for (int i = 0; i < 100; i++) {
         auto t = now + std::chrono::microseconds(randomMsec(rng));
         auto tReschedule = now + std::chrono::microseconds(500 + randomMsec(rng));
         int whichCounter = zeroToNine(rng);
-        CScheduler::Function f = std::bind(&microTask, std::ref(microTasks),
+        CScheduler::Function f = std::bind_front(&microTask, std::ref(microTasks),
                                              std::ref(counterMutex[whichCounter]), std::ref(counter[whichCounter]),
                                              randomDelta(rng), tReschedule);
         microTasks.schedule(f, t);
@@ -209,7 +209,8 @@ BOOST_AUTO_TEST_CASE(mockforward)
     auto now = std::chrono::steady_clock::now();
     int delta = std::chrono::duration_cast<std::chrono::seconds>(first - now).count();
     // should be between 2 & 3 minutes from now
-    BOOST_CHECK(delta > 2*60 && delta < 3*60);
+    BOOST_CHECK(delta > 2*60);
+    BOOST_CHECK(delta < 3*60);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

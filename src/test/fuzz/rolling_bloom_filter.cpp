@@ -1,4 +1,4 @@
-// Copyright (c) 2020-2021 The Bitcoin Core developers
+// Copyright (c) 2020-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -23,8 +23,7 @@ FUZZ_TARGET(rolling_bloom_filter)
     CRollingBloomFilter rolling_bloom_filter{
         fuzzed_data_provider.ConsumeIntegralInRange<unsigned int>(1, 1000),
         0.999 / fuzzed_data_provider.ConsumeIntegralInRange<unsigned int>(1, std::numeric_limits<unsigned int>::max())};
-    LIMITED_WHILE(fuzzed_data_provider.remaining_bytes() > 0, 3000)
-    {
+    LIMITED_WHILE (fuzzed_data_provider.remaining_bytes() > 0, 3000) {
         CallOneOf(
             fuzzed_data_provider,
             [&] {

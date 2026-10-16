@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2020-2022 The Bitcoin Core developers
+# Copyright (c) 2020-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """A limited-functionality wallet, which may replace a real wallet in tests"""
@@ -33,11 +33,9 @@ from test_framework.messages import (
     CTxInWitness,
     CTxOut,
     hash256,
-    ser_compact_size,
 )
 from test_framework.script import (
     CScript,
-    OP_1,
     OP_NOP,
     OP_RETURN,
     OP_TRUE,
@@ -45,6 +43,7 @@ from test_framework.script import (
     taproot_construct,
 )
 from test_framework.script_util import (
+    bulk_vout,
     key_to_p2pk_script,
     key_to_p2pkh_script,
     key_to_p2sh_p2wpkh_script,
@@ -55,7 +54,10 @@ from test_framework.util import (
     assert_greater_than_or_equal,
     get_fee,
 )
-from test_framework.wallet_util import generate_keypair
+from test_framework.wallet_util import (
+    bytes_to_wif,
+    generate_keypair,
+)
 
 DEFAULT_FEE = Decimal("0.0001")
 
@@ -121,17 +123,9 @@ class MiniWallet:
         """Pad a transaction with extra outputs until it reaches a target vsize.
         returns the tx
         """
-        if target_vsize < tx.get_vsize():
-            raise RuntimeError(f"target_vsize {target_vsize} is less than transaction virtual size {tx.get_vsize()}")
-
         tx.vout.append(CTxOut(nValue=0, scriptPubKey=CScript([OP_RETURN])))
-        # determine number of needed padding bytes
-        dummy_vbytes = target_vsize - tx.get_vsize()
-        # compensate for the increase of the compact-size encoded script length
-        # (note that the length encoding of the unpadded output script needs one byte)
-        dummy_vbytes -= len(ser_compact_size(dummy_vbytes)) - 1
-        tx.vout[-1].scriptPubKey = CScript([OP_RETURN] + [OP_1] * dummy_vbytes)
-        assert_equal(tx.get_vsize(), target_vsize)
+        bulk_vout(tx, target_vsize)
+
 
     def get_balance(self):
         return sum(u['value'] for u in self._utxos)
@@ -428,9 +422,44 @@ class MiniWallet:
         return chain
 
 
+class NodeSigner:
+    """Simple wallet replacement that delegates signing of existing raw transactions to a node by
+       using the `signrawtransactionwithkey` RPC. This can be used for spending from widespread
+       output types (P2PKH, P2WPKH, P2SH-P2WPKH, P2TR) without having the wallet compiled in."""
+    def __init__(self, node):
+        self._node = node
+        self._key_entries = []
+
+    def getnewaddress(self, address_type='legacy'):
+        (seckey, pubkey), spk, address = getnewdestination(address_type)
+        redeem_script = key_to_p2wpkh_script(pubkey) if address_type == 'p2sh-segwit' else None
+        self._key_entries.append({"seckey_wif": bytes_to_wif(seckey.get_bytes()), "output_script": spk, "redeem_script": redeem_script})
+        return pubkey, spk, address
+
+    def listunspent(self):
+        needles = [descsum_create(f'raw({key_entry["output_script"].hex()})') for key_entry in self._key_entries]
+        scan_res = self._node.scantxoutset(action="start", scanobjects=needles)
+        spend_height = scan_res['height'] + 1  # coins would be spent in the next block
+        unspents = []
+        for u in scan_res['unspents']:
+            if u["coinbase"] and (spend_height - u["height"]) < COINBASE_MATURITY:  # skip immature coins
+                continue
+            unspent = { "txid": u["txid"], "vout": u["vout"], "scriptPubKey": u["scriptPubKey"], "amount": u["amount"] }
+            key_entry = [ke for ke in self._key_entries if ke["output_script"] == bytes.fromhex(u["scriptPubKey"])][0]
+            if key_entry["redeem_script"] is not None:
+                unspent["redeemScript"] = key_entry["redeem_script"].hex()
+            unspents.append(unspent)
+        return unspents
+
+    def signrawtransaction(self, tx_hex, inputs):
+        output_scripts_to_sign = {i["scriptPubKey"] for i in inputs}
+        seckeys_wif = [ke["seckey_wif"] for ke in self._key_entries if ke["output_script"].hex() in output_scripts_to_sign]
+        return self._node.signrawtransactionwithkey(tx_hex, seckeys_wif, inputs)
+
+
 def getnewdestination(address_type='bech32m'):
     """Generate a random destination of the specified type and return the
-       corresponding public key, scriptPubKey and address. Supported types are
+       corresponding key pair, scriptPubKey and address. Supported types are
        'legacy', 'p2sh-segwit', 'bech32' and 'bech32m'. Can be used when a random
        destination is needed, but no compiled wallet is available (e.g. as
        replacement to the getnewaddress/getaddressinfo RPCs)."""
@@ -451,4 +480,4 @@ def getnewdestination(address_type='bech32m'):
         address = output_key_to_p2tr(pubkey)
     else:
         assert False
-    return pubkey, scriptpubkey, address
+    return (key, pubkey), scriptpubkey, address

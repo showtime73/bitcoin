@@ -6,26 +6,29 @@
 #define BITCOIN_RPC_BLOCKCHAIN_H
 
 #include <consensus/amount.h>
-#include <core_io.h>
-#include <streams.h>
 #include <sync.h>
 #include <util/fs.h>
 #include <validation.h>
 
-#include <any>
 #include <cstdint>
+#include <optional>
+#include <utility>
 #include <vector>
 
 class CBlock;
 class CBlockIndex;
-class Chainstate;
+class CChain;
 class UniValue;
+class AutoFile;
+class uint256;
+enum class TxVerbosity;
+
 namespace node {
 class BlockManager;
 struct NodeContext;
 } // namespace node
 
-static constexpr int NUM_GETBLOCKSTATS_PERCENTILES = 5;
+inline constexpr int NUM_GETBLOCKSTATS_PERCENTILES = 5;
 
 /**
  * Get the difficulty of the net wrt to the given block index.
@@ -36,16 +39,16 @@ static constexpr int NUM_GETBLOCKSTATS_PERCENTILES = 5;
 double GetDifficulty(const CBlockIndex& blockindex);
 
 /** Block description to JSON */
-UniValue blockToJSON(node::BlockManager& blockman, const CBlock& block, const CBlockIndex& tip, const CBlockIndex& blockindex, TxVerbosity verbosity, const uint256 pow_limit) LOCKS_EXCLUDED(cs_main);
+UniValue blockToJSON(node::BlockManager& blockman, const CBlock& block, const CBlockIndex& tip, const CBlockIndex& blockindex, TxVerbosity verbosity, uint256 pow_limit) LOCKS_EXCLUDED(cs_main);
 
 /** Block header to JSON */
-UniValue blockheaderToJSON(const CBlockIndex& tip, const CBlockIndex& blockindex, const uint256 pow_limit) LOCKS_EXCLUDED(cs_main);
+UniValue blockheaderToJSON(const CBlockIndex& tip, const CBlockIndex& blockindex, uint256 pow_limit) LOCKS_EXCLUDED(cs_main);
 
 /** Used by getblockstats to get feerates at different percentiles by weight  */
 void CalculatePercentilesByWeight(CAmount result[NUM_GETBLOCKSTATS_PERCENTILES], std::vector<std::pair<CAmount, int64_t>>& scores, int64_t total_weight);
 
 /**
- * Test-only helper to create UTXO snapshots given a chainstate and a file handle.
+ * Helper to create UTXO snapshots given a chainstate and a file handle.
  * @return a UniValue map containing metadata about the snapshot.
  */
 UniValue CreateUTXOSnapshot(

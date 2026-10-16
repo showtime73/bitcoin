@@ -27,10 +27,8 @@ Arguments:
 
       #include <schema.capnp.h>
 
-    The specified include_prefix should be ${CMAKE_SOURCE_DIR} or a
-    subdirectory of it to include files relative to the project root. It can
-    be ${CMAKE_CURRENT_SOURCE_DIR} to include files relative to the current
-    source directory.
+    Pass ${CMAKE_CURRENT_SOURCE_DIR} or a subdirectory of it to include files
+    relative to the current source directory (the typical usage).
 
 Additional Unnamed Arguments:
 
@@ -43,19 +41,26 @@ Optional Keyword Arguments:
   IMPORT_PATHS: Specifies additional directories to search for imported
     `.capnp` files.
 
+  ONLY_CAPNP: If specified, only the Cap'n Proto serialization files
+    (`.capnp.h`, `.capnp.c++`) are generated and compiled. The mpgen proxy
+    files (`.capnp.proxy-client.c++`, `.capnp.proxy-server.c++`,
+    `.capnp.proxy-types.c++`, etc.) are skipped. Useful when you need
+    Cap'n Proto serialization without the multiprocess RPC proxy
+    infrastructure.
+
 Example:
   # Assuming `my_library` is a target and `lib/` contains `.capnp` schema
   # files with imports from `include/`.
-  target_capnp_sources(my_library "${CMAKE_SOURCE_DIR}"
+  target_capnp_sources(my_library "${CMAKE_CURRENT_SOURCE_DIR}"
                        lib/schema1.capnp lib/schema2.capnp
-                       IMPORT_PATHS ${CMAKE_SOURCE_DIR}/include)
+                       IMPORT_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 #]=]
 
 function(target_capnp_sources target include_prefix)
   cmake_parse_arguments(PARSE_ARGV 2
     "TCS"           # prefix
-    ""              # options
+    "ONLY_CAPNP"    # options
     ""              # one_value_keywords
     "IMPORT_PATHS"  # multi_value_keywords
   )
@@ -81,20 +86,25 @@ function(target_capnp_sources target include_prefix)
       DEPENDS ${capnp_file}
       VERBATIM
     )
+    # Skip linting for capnp-generated files but keep it for mpgen-generated ones
+    set_source_files_properties(${capnp_file}.c++ PROPERTIES SKIP_LINTING TRUE) # Ignored before cmake 3.27
     target_sources(${target} PRIVATE
       ${CMAKE_CURRENT_BINARY_DIR}/${capnp_file}.c++
-      ${CMAKE_CURRENT_BINARY_DIR}/${capnp_file}.proxy-client.c++
-      ${CMAKE_CURRENT_BINARY_DIR}/${capnp_file}.proxy-server.c++
-      ${CMAKE_CURRENT_BINARY_DIR}/${capnp_file}.proxy-types.c++
     )
-
+    if(NOT TCS_ONLY_CAPNP)
+      target_sources(${target} PRIVATE
+        ${CMAKE_CURRENT_BINARY_DIR}/${capnp_file}.proxy-client.c++
+        ${CMAKE_CURRENT_BINARY_DIR}/${capnp_file}.proxy-server.c++
+        ${CMAKE_CURRENT_BINARY_DIR}/${capnp_file}.proxy-types.c++
+      )
+    endif()
     list(APPEND generated_headers ${capnp_file}.h)
   endforeach()
 
   # Translate include_prefix from a source path to a binary path and add it as a
   # target include directory.
-  set(build_include_prefix ${CMAKE_BINARY_DIR})
-  file(RELATIVE_PATH relative_path ${CMAKE_SOURCE_DIR} ${include_prefix})
+  set(build_include_prefix ${CMAKE_CURRENT_BINARY_DIR})
+  file(RELATIVE_PATH relative_path ${CMAKE_CURRENT_SOURCE_DIR} ${include_prefix})
   if(relative_path)
     string(APPEND build_include_prefix "/" "${relative_path}")
   endif()
@@ -109,5 +119,7 @@ function(target_capnp_sources target include_prefix)
   # dependencies explicitly because while cmake detect dependencies of non
   # generated files on generated headers, it does not reliably detect
   # dependencies of generated headers on other generated headers.
-  add_custom_target("${target}_headers" DEPENDS ${generated_headers})
+  if(NOT TARGET "${target}_headers")
+    add_custom_target("${target}_headers" DEPENDS ${generated_headers})
+  endif()
 endfunction()

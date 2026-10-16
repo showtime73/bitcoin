@@ -1,9 +1,9 @@
-// Copyright (c) 2012-2022 The Bitcoin Core developers
+// Copyright (c) 2012-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <sync.h>
-#include <test/util/setup_common.h>
+#include <test/util/common.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -18,27 +18,21 @@ void TestPotentialDeadLockDetected(MutexType& mutex1, MutexType& mutex2)
         LOCK2(mutex1, mutex2);
     }
     BOOST_CHECK(LockStackEmpty());
-    bool error_thrown = false;
-    try {
+    {
+#ifdef DEBUG_LOCKORDER
+        BOOST_CHECK_EXCEPTION(LOCK2(mutex2, mutex1), std::logic_error, HasReason{"potential deadlock detected: mutex1 -> mutex2 -> mutex1"});
+#else
         LOCK2(mutex2, mutex1);
-    } catch (const std::logic_error& e) {
-        BOOST_CHECK_EQUAL(e.what(), "potential deadlock detected: mutex1 -> mutex2 -> mutex1");
-        error_thrown = true;
+#endif
     }
     BOOST_CHECK(LockStackEmpty());
-    #ifdef DEBUG_LOCKORDER
-    BOOST_CHECK(error_thrown);
-    #else
-    BOOST_CHECK(!error_thrown);
-    #endif
 }
 
 #ifdef DEBUG_LOCKORDER
 template <typename MutexType>
 void TestDoubleLock2(MutexType& m)
 {
-    ENTER_CRITICAL_SECTION(m);
-    LEAVE_CRITICAL_SECTION(m);
+    LOCK(m);
 }
 
 template <typename MutexType>
@@ -48,15 +42,15 @@ void TestDoubleLock(bool should_throw)
     g_debug_lockorder_abort = false;
 
     MutexType m;
-    ENTER_CRITICAL_SECTION(m);
-    if (should_throw) {
-        BOOST_CHECK_EXCEPTION(TestDoubleLock2(m), std::logic_error,
+    {
+        LOCK(m);
+        if (should_throw) {
+            BOOST_CHECK_EXCEPTION(TestDoubleLock2(m), std::logic_error,
                               HasReason("double lock detected"));
-    } else {
-        BOOST_CHECK_NO_THROW(TestDoubleLock2(m));
+        } else {
+            BOOST_CHECK_NO_THROW(TestDoubleLock2(m));
+        }
     }
-    LEAVE_CRITICAL_SECTION(m);
-
     BOOST_CHECK(LockStackEmpty());
 
     g_debug_lockorder_abort = prev;
@@ -64,15 +58,15 @@ void TestDoubleLock(bool should_throw)
 #endif /* DEBUG_LOCKORDER */
 
 template <typename MutexType>
-void TestInconsistentLockOrderDetected(MutexType& mutex1, MutexType& mutex2) NO_THREAD_SAFETY_ANALYSIS
+void TestInconsistentLockOrderDetected(MutexType& mutex1, MutexType& mutex2)
 {
-    ENTER_CRITICAL_SECTION(mutex1);
-    ENTER_CRITICAL_SECTION(mutex2);
+    {
+        WAIT_LOCK(mutex1, lock1);
+        LOCK(mutex2);
 #ifdef DEBUG_LOCKORDER
-    BOOST_CHECK_EXCEPTION(LEAVE_CRITICAL_SECTION(mutex1), std::logic_error, HasReason("mutex1 was not most recent critical section locked"));
+        BOOST_CHECK_EXCEPTION(REVERSE_LOCK(lock1, mutex1), std::logic_error, HasReason("mutex1 was not most recent critical section locked"));
 #endif // DEBUG_LOCKORDER
-    LEAVE_CRITICAL_SECTION(mutex2);
-    LEAVE_CRITICAL_SECTION(mutex1);
+    }
     BOOST_CHECK(LockStackEmpty());
 }
 } // namespace

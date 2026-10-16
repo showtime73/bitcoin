@@ -1,21 +1,25 @@
-// Copyright (c) 2018-2022 The Bitcoin Core developers
+// Copyright (c) 2018-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <util/threadnames.h>
+#include <util/check.h>
+
+#include <algorithm>
 #include <cstring>
 #include <string>
-#include <thread>
-#include <utility>
 
 #if (defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__DragonFly__))
 #include <pthread.h>
 #include <pthread_np.h>
 #endif
 
-#include <util/threadnames.h>
-
 #if __has_include(<sys/prctl.h>)
 #include <sys/prctl.h>
+#endif
+
+#ifdef WIN32
+#include <windows.h>
 #endif
 
 //! Set the thread's name at the process level. Does not affect the
@@ -29,6 +33,11 @@ static void SetThreadName(const char* name)
     pthread_set_name_np(pthread_self(), name);
 #elif defined(__APPLE__)
     pthread_setname_np(name);
+#elif defined(WIN32)
+    // Thread names are ASCII-only, so widening each character is sufficient as
+    // a conversion to UTF-16.
+    const std::wstring wname{name, name + std::strlen(name)};
+    ::SetThreadDescription(::GetCurrentThread(), wname.c_str());
 #else
     // Prevent warnings for unused parameters...
     (void)name;
@@ -54,6 +63,7 @@ static void SetInternalName(const std::string& name)
 
 void util::ThreadRename(const std::string& name)
 {
+    Assume(name.size() <= 13); // Linux keeps 15 bytes
     SetThreadName(("b-" + name).c_str());
     SetInternalName(name);
 }

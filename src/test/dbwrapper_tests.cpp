@@ -1,13 +1,16 @@
-// Copyright (c) 2012-2022 The Bitcoin Core developers
+// Copyright (c) 2012-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <dbwrapper.h>
+#include <test/util/common.h>
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
 #include <uint256.h>
+#include <util/byte_units.h>
 #include <util/string.h>
 
+#include <fstream>
 #include <memory>
 #include <ranges>
 
@@ -39,7 +42,7 @@ BOOST_AUTO_TEST_CASE(dbwrapper)
             for (uint8_t k{0}; k < 10; ++k) {
                 uint8_t key{k};
                 uint256 value{m_rng.rand256()};
-                BOOST_CHECK(dbw.Write(key, value));
+                dbw.Write(key, value);
                 key_values.emplace_back(key, value);
             }
         }
@@ -73,7 +76,7 @@ BOOST_AUTO_TEST_CASE(dbwrapper_basic_data)
     // Perform tests both obfuscated and non-obfuscated.
     for (bool obfuscate : {false, true}) {
         fs::path ph = m_args.GetDataDirBase() / (obfuscate ? "dbwrapper_1_obfuscate_true" : "dbwrapper_1_obfuscate_false");
-        CDBWrapper dbw({.path = ph, .cache_bytes = 1 << 20, .memory_only = false, .wipe_data = true, .obfuscate = obfuscate});
+        CDBWrapper dbw({.path = ph, .cache_bytes = 1_MiB, .memory_only = false, .wipe_data = true, .obfuscate = obfuscate});
 
         uint256 res;
         uint32_t res_uint_32;
@@ -86,7 +89,7 @@ BOOST_AUTO_TEST_CASE(dbwrapper_basic_data)
         std::string key_block = "b" + m_rng.rand256().ToString();
 
         uint256 in_block = m_rng.rand256();
-        BOOST_CHECK(dbw.Write(key_block, in_block));
+        dbw.Write(key_block, in_block);
         BOOST_CHECK(dbw.Read(key_block, res));
         BOOST_CHECK_EQUAL(res.ToString(), in_block.ToString());
 
@@ -94,7 +97,7 @@ BOOST_AUTO_TEST_CASE(dbwrapper_basic_data)
         std::string key_file = strprintf("f%04x", m_rng.rand32());
 
         uint256 in_file_info = m_rng.rand256();
-        BOOST_CHECK(dbw.Write(key_file, in_file_info));
+        dbw.Write(key_file, in_file_info);
         BOOST_CHECK(dbw.Read(key_file, res));
         BOOST_CHECK_EQUAL(res.ToString(), in_file_info.ToString());
 
@@ -102,7 +105,7 @@ BOOST_AUTO_TEST_CASE(dbwrapper_basic_data)
         std::string key_transaction = "t" + m_rng.rand256().ToString();
 
         uint256 in_transaction = m_rng.rand256();
-        BOOST_CHECK(dbw.Write(key_transaction, in_transaction));
+        dbw.Write(key_transaction, in_transaction);
         BOOST_CHECK(dbw.Read(key_transaction, res));
         BOOST_CHECK_EQUAL(res.ToString(), in_transaction.ToString());
 
@@ -110,28 +113,28 @@ BOOST_AUTO_TEST_CASE(dbwrapper_basic_data)
         std::string key_utxo = "c" + m_rng.rand256().ToString();
 
         uint256 in_utxo = m_rng.rand256();
-        BOOST_CHECK(dbw.Write(key_utxo, in_utxo));
+        dbw.Write(key_utxo, in_utxo);
         BOOST_CHECK(dbw.Read(key_utxo, res));
         BOOST_CHECK_EQUAL(res.ToString(), in_utxo.ToString());
 
         //Simulate last block file number - "l"
         uint8_t key_last_blockfile_number{'l'};
         uint32_t lastblockfilenumber = m_rng.rand32();
-        BOOST_CHECK(dbw.Write(key_last_blockfile_number, lastblockfilenumber));
+        dbw.Write(key_last_blockfile_number, lastblockfilenumber);
         BOOST_CHECK(dbw.Read(key_last_blockfile_number, res_uint_32));
         BOOST_CHECK_EQUAL(lastblockfilenumber, res_uint_32);
 
         //Simulate Is Reindexing - "R"
         uint8_t key_IsReindexing{'R'};
         bool isInReindexing = m_rng.randbool();
-        BOOST_CHECK(dbw.Write(key_IsReindexing, isInReindexing));
+        dbw.Write(key_IsReindexing, isInReindexing);
         BOOST_CHECK(dbw.Read(key_IsReindexing, res_bool));
         BOOST_CHECK_EQUAL(isInReindexing, res_bool);
 
         //Simulate last block hash up to which UXTO covers - 'B'
         uint8_t key_lastblockhash_uxto{'B'};
         uint256 lastblock_hash = m_rng.rand256();
-        BOOST_CHECK(dbw.Write(key_lastblockhash_uxto, lastblock_hash));
+        dbw.Write(key_lastblockhash_uxto, lastblock_hash);
         BOOST_CHECK(dbw.Read(key_lastblockhash_uxto, res));
         BOOST_CHECK_EQUAL(lastblock_hash, res);
 
@@ -142,7 +145,7 @@ BOOST_AUTO_TEST_CASE(dbwrapper_basic_data)
         std::string key_file_option = strprintf("%s%01x%s", file_option_tag, filename_length, filename);
 
         bool in_file_bool = m_rng.randbool();
-        BOOST_CHECK(dbw.Write(key_file_option, in_file_bool));
+        dbw.Write(key_file_option, in_file_bool);
         BOOST_CHECK(dbw.Read(key_file_option, res_bool));
         BOOST_CHECK_EQUAL(res_bool, in_file_bool);
     }
@@ -154,7 +157,7 @@ BOOST_AUTO_TEST_CASE(dbwrapper_batch)
     // Perform tests both obfuscated and non-obfuscated.
     for (const bool obfuscate : {false, true}) {
         fs::path ph = m_args.GetDataDirBase() / (obfuscate ? "dbwrapper_batch_obfuscate_true" : "dbwrapper_batch_obfuscate_false");
-        CDBWrapper dbw({.path = ph, .cache_bytes = 1 << 20, .memory_only = true, .wipe_data = false, .obfuscate = obfuscate});
+        CDBWrapper dbw({.path = ph, .cache_bytes = 1_MiB, .memory_only = true, .wipe_data = false, .obfuscate = obfuscate});
 
         uint8_t key{'i'};
         uint256 in = m_rng.rand256();
@@ -173,7 +176,7 @@ BOOST_AUTO_TEST_CASE(dbwrapper_batch)
         // Remove key3 before it's even been written
         batch.Erase(key3);
 
-        BOOST_CHECK(dbw.WriteBatch(batch));
+        dbw.WriteBatch(batch);
 
         BOOST_CHECK(dbw.Read(key, res));
         BOOST_CHECK_EQUAL(res.ToString(), in.ToString());
@@ -182,6 +185,117 @@ BOOST_AUTO_TEST_CASE(dbwrapper_batch)
 
         // key3 should've never been written
         BOOST_CHECK(dbw.Read(key3, res) == false);
+
+        batch.Clear();
+        batch.Write(key3, in3);
+        dbw.WriteBatch(batch);
+
+        BOOST_CHECK(dbw.Read(key3, res));
+        BOOST_CHECK_EQUAL(res.ToString(), in3.ToString());
+    }
+}
+
+// Verify that Read() returns false (without throwing) when the stored value
+// fails to be deserialized
+BOOST_AUTO_TEST_CASE(dbwrapper_read_returns_false_on_deserialization_error)
+{
+    for (const bool obfuscate : {false, true}) {
+        const fs::path path{m_args.GetDataDirBase() / (obfuscate ? "dbwrapper_deser_obf" : "dbwrapper_deser_noobf")};
+        CDBWrapper dbw({.path = path, .cache_bytes = 1 << 20, .wipe_data = true, .obfuscate = obfuscate});
+
+        constexpr uint8_t key{'X'};
+
+        // Write a single byte. uint256 requires 32 bytes, so reading this key
+        // as uint256 must trigger a deserialization error inside Read()
+        dbw.Write(key, uint8_t{0xFF});
+        BOOST_CHECK(dbw.Exists(key));
+
+        // Read() must catch the deserialization exception and return false,
+        // the same as if the key were absent
+        uint256 result;
+        BOOST_CHECK(!dbw.Read(key, result));
+    }
+}
+
+// Verify Read() throws dbwrapper_error due to an internal db error
+BOOST_AUTO_TEST_CASE(dbwrapper_read_throws_on_db_error)
+{
+    const fs::path path{m_args.GetDataDirBase() / "dbwrapper_db_error"};
+    constexpr uint8_t key{'Y'};
+
+    const auto make_db = [] (const fs::path& path, const bool force_compact) {
+        return CDBWrapper({.path = path, .cache_bytes = 1 << 20, .obfuscate = false,
+                        .options = {.force_compact = force_compact}});
+    };
+
+    // Write a value and close the database
+    make_db(path, /*force_compact=*/false).Write(key, m_rng.rand256());
+
+    // Force compaction to ensure the data is written into the .ldb files
+    // rather than left in the WAL.
+    (void)make_db(path, /*force_compact=*/true);
+
+    // Corrupt every table so any subsequent Read() fails
+    for (const auto& entry : fs::directory_iterator(path)) {
+        if (entry.path().extension() == ".ldb") {
+            std::ofstream{entry.path(), std::ios::binary | std::ios::trunc}
+            .write("\xff", 1);
+        }
+    }
+
+    // Read() should detect the issue now and throw
+    const auto db{make_db(path, /*force_compact=*/false)};
+    uint256 result;
+    BOOST_CHECK_EXCEPTION(db.Read(key, result), dbwrapper_error, HasReason("Fatal LevelDB error"));
+
+    // TryRead() must return DatabaseError (without throwing).
+    CDBWrapper::ReadStatus status = db.TryRead(key, result);
+    BOOST_REQUIRE(!status);
+    BOOST_CHECK(status.error().status == CDBWrapper::ReadFailure::Code::DatabaseError);
+    BOOST_CHECK(status.error().err_msg.find("Fatal LevelDB error") != std::string::npos);
+}
+
+// Exercise TryRead() return values directly: found, absent and DeserializationError.
+// DatabaseError is tested inside 'dbwrapper_read_throws_on_db_error' test
+BOOST_AUTO_TEST_CASE(dbwrapper_tryread)
+{
+    for (const bool obfuscate : {false, true}) {
+        const fs::path path{m_args.GetDataDirBase() / (obfuscate ? "dbwrapper_tryread_obf" : "dbwrapper_tryread_noobf")};
+        CDBWrapper dbw({.path = path, .cache_bytes = 1 << 20, .wipe_data = true, .obfuscate = obfuscate});
+
+        constexpr uint8_t key_ok{'A'};
+        constexpr uint8_t key_missing{'B'};
+        constexpr uint8_t key_bad{'C'};
+
+        uint256 written_value{m_rng.rand256()};
+        dbw.Write(key_ok, written_value);
+        dbw.Write(key_bad, uint8_t{0xFF});
+
+        // Found: key exists, value deserializes correctly
+        {
+            uint256 read_value;
+            CDBWrapper::ReadStatus status = dbw.TryRead(key_ok, read_value);
+            BOOST_REQUIRE(status);
+            BOOST_CHECK(status.value());
+            BOOST_CHECK_EQUAL(read_value, written_value);
+        }
+
+        // Absent: key does not exist
+        {
+            uint256 read_value;
+            CDBWrapper::ReadStatus status = dbw.TryRead(key_missing, read_value);
+            BOOST_REQUIRE(status);
+            BOOST_CHECK(!status.value());
+        }
+
+        // DeserializationError: key exists but stored value is too short
+        {
+            uint256 read_value;
+            CDBWrapper::ReadStatus status = dbw.TryRead(key_bad, read_value);
+            BOOST_REQUIRE(!status);
+            BOOST_CHECK(status.error().status == CDBWrapper::ReadFailure::Code::DeserializationError);
+            BOOST_CHECK(!status.error().err_msg.empty());
+        }
     }
 }
 
@@ -190,34 +304,56 @@ BOOST_AUTO_TEST_CASE(dbwrapper_iterator)
     // Perform tests both obfuscated and non-obfuscated.
     for (const bool obfuscate : {false, true}) {
         fs::path ph = m_args.GetDataDirBase() / (obfuscate ? "dbwrapper_iterator_obfuscate_true" : "dbwrapper_iterator_obfuscate_false");
-        CDBWrapper dbw({.path = ph, .cache_bytes = 1 << 20, .memory_only = true, .wipe_data = false, .obfuscate = obfuscate});
+        CDBWrapper dbw({.path = ph, .cache_bytes = 1_MiB, .memory_only = true, .wipe_data = false, .obfuscate = obfuscate});
 
         // The two keys are intentionally chosen for ordering
         uint8_t key{'j'};
         uint256 in = m_rng.rand256();
-        BOOST_CHECK(dbw.Write(key, in));
+        dbw.Write(key, in);
         uint8_t key2{'k'};
         uint256 in2 = m_rng.rand256();
-        BOOST_CHECK(dbw.Write(key2, in2));
+        dbw.Write(key2, in2);
 
-        std::unique_ptr<CDBIterator> it(const_cast<CDBWrapper&>(dbw).NewIterator());
+        std::unique_ptr<CDBIterator> it(dbw.NewIterator());
 
         // Be sure to seek past the obfuscation key (if it exists)
         it->Seek(key);
 
+        // A failed key decode must not consume the current iterator entry.
+        uint16_t key_too_large{0};
+        BOOST_CHECK(!it->GetKey(key_too_large));
+
         uint8_t key_res;
-        uint256 val_res;
 
         BOOST_REQUIRE(it->GetKey(key_res));
-        BOOST_REQUIRE(it->GetValue(val_res));
         BOOST_CHECK_EQUAL(key_res, key);
+        // A failed value decode must not leave the iterator's scratch stream dirty.
+        std::pair<uint256, uint8_t> value_too_large;
+        BOOST_CHECK(!it->GetValue(value_too_large));
+
+        uint256 val_res;
+        BOOST_REQUIRE(it->GetValue(val_res));
+        BOOST_CHECK_EQUAL(val_res.ToString(), in.ToString());
+
+        it->Seek(key2);
+
+        BOOST_REQUIRE(it->GetKey(key_res));
+        BOOST_CHECK_EQUAL(key_res, key2);
+        BOOST_REQUIRE(it->GetValue(val_res));
+        BOOST_CHECK_EQUAL(val_res.ToString(), in2.ToString());
+
+        it->Seek(key);
+
+        BOOST_REQUIRE(it->GetKey(key_res));
+        BOOST_CHECK_EQUAL(key_res, key);
+        BOOST_REQUIRE(it->GetValue(val_res));
         BOOST_CHECK_EQUAL(val_res.ToString(), in.ToString());
 
         it->Next();
 
         BOOST_REQUIRE(it->GetKey(key_res));
-        BOOST_REQUIRE(it->GetValue(val_res));
         BOOST_CHECK_EQUAL(key_res, key2);
+        BOOST_REQUIRE(it->GetValue(val_res));
         BOOST_CHECK_EQUAL(val_res.ToString(), in2.ToString());
 
         it->Next();
@@ -238,7 +374,7 @@ BOOST_AUTO_TEST_CASE(existing_data_no_obfuscate)
     uint256 in = m_rng.rand256();
     uint256 res;
 
-    BOOST_CHECK(dbw->Write(key, in));
+    dbw->Write(key, in);
     BOOST_CHECK(dbw->Read(key, res));
     BOOST_CHECK_EQUAL(res.ToString(), in.ToString());
 
@@ -261,7 +397,7 @@ BOOST_AUTO_TEST_CASE(existing_data_no_obfuscate)
     uint256 res3;
 
     // Check that we can write successfully
-    BOOST_CHECK(odbw.Write(key, in2));
+    odbw.Write(key, in2);
     BOOST_CHECK(odbw.Read(key, res3));
     BOOST_CHECK_EQUAL(res3.ToString(), in2.ToString());
 }
@@ -279,7 +415,7 @@ BOOST_AUTO_TEST_CASE(existing_data_reindex)
     uint256 in = m_rng.rand256();
     uint256 res;
 
-    BOOST_CHECK(dbw->Write(key, in));
+    dbw->Write(key, in);
     BOOST_CHECK(dbw->Read(key, res));
     BOOST_CHECK_EQUAL(res.ToString(), in.ToString());
 
@@ -298,7 +434,7 @@ BOOST_AUTO_TEST_CASE(existing_data_reindex)
     uint256 res3;
 
     // Check that we can write successfully
-    BOOST_CHECK(odbw.Write(key, in2));
+    odbw.Write(key, in2);
     BOOST_CHECK(odbw.Read(key, res3));
     BOOST_CHECK_EQUAL(res3.ToString(), in2.ToString());
 }
@@ -306,11 +442,11 @@ BOOST_AUTO_TEST_CASE(existing_data_reindex)
 BOOST_AUTO_TEST_CASE(iterator_ordering)
 {
     fs::path ph = m_args.GetDataDirBase() / "iterator_ordering";
-    CDBWrapper dbw({.path = ph, .cache_bytes = 1 << 20, .memory_only = true, .wipe_data = false, .obfuscate = false});
+    CDBWrapper dbw({.path = ph, .cache_bytes = 1_MiB, .memory_only = true, .wipe_data = false, .obfuscate = false});
     for (int x=0x00; x<256; ++x) {
         uint8_t key = x;
         uint32_t value = x*x;
-        if (!(x & 1)) BOOST_CHECK(dbw.Write(key, value));
+        if (!(x & 1)) dbw.Write(key, value);
     }
 
     // Check that creating an iterator creates a snapshot
@@ -319,7 +455,7 @@ BOOST_AUTO_TEST_CASE(iterator_ordering)
     for (unsigned int x=0x00; x<256; ++x) {
         uint8_t key = x;
         uint32_t value = x*x;
-        if (x & 1) BOOST_CHECK(dbw.Write(key, value));
+        if (x & 1) dbw.Write(key, value);
     }
 
     for (const int seek_start : {0x00, 0x80}) {
@@ -364,7 +500,7 @@ struct StringContentsSerializer {
     {
         str.clear();
         uint8_t c{0};
-        while (!s.eof()) {
+        while (!s.empty()) {
             s >> c;
             str.push_back(c);
         }
@@ -374,14 +510,14 @@ struct StringContentsSerializer {
 BOOST_AUTO_TEST_CASE(iterator_string_ordering)
 {
     fs::path ph = m_args.GetDataDirBase() / "iterator_string_ordering";
-    CDBWrapper dbw({.path = ph, .cache_bytes = 1 << 20, .memory_only = true, .wipe_data = false, .obfuscate = false});
+    CDBWrapper dbw({.path = ph, .cache_bytes = 1_MiB, .memory_only = true, .wipe_data = false, .obfuscate = false});
     for (int x = 0; x < 10; ++x) {
         for (int y = 0; y < 10; ++y) {
             std::string key{ToString(x)};
             for (int z = 0; z < y; ++z)
                 key += key;
             uint32_t value = x*x;
-            BOOST_CHECK(dbw.Write(StringContentsSerializer{key}, value));
+            dbw.Write(StringContentsSerializer{key}, value);
         }
     }
 
@@ -416,7 +552,7 @@ BOOST_AUTO_TEST_CASE(unicodepath)
     // the ANSI CreateDirectoryA call and the code page isn't UTF8.
     // It will succeed if created with CreateDirectoryW.
     fs::path ph = m_args.GetDataDirBase() / "test_runner_₿_🏃_20191128_104644";
-    CDBWrapper dbw({.path = ph, .cache_bytes = 1 << 20});
+    CDBWrapper dbw({.path = ph, .cache_bytes = 1_MiB});
 
     fs::path lockPath = ph / "LOCK";
     BOOST_CHECK(fs::exists(lockPath));

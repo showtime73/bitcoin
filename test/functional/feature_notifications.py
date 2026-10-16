@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2014-2022 The Bitcoin Core developers
+# Copyright (c) 2014-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the -alertnotify, -blocknotify and -walletnotify options."""
@@ -7,7 +7,11 @@ import os
 import platform
 
 from test_framework.address import ADDRESS_BCRT1_UNSPENDABLE
+from test_framework.blocktools import (
+    create_block,
+)
 from test_framework.descriptors import descsum_create
+from test_framework.extendedkey import ExtendedPrivateKey
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
@@ -20,8 +24,17 @@ FILE_CHAR_END = 128
 FILE_CHARS_DISALLOWED = '/\\?%*:|"<>' if platform.system() == 'Windows' else '/'
 UNCONFIRMED_HASH_STRING = 'unconfirmed'
 
+LARGE_WORK_INVALID_CHAIN_WARNING = (
+    "Warning: Found invalid chain more than 6 blocks longer than our best chain. This could be due to database corruption or consensus incompatibility with peers."
+)
+
+
 def notify_outputname(walletname, txid):
     return txid if platform.system() == 'Windows' else f'{walletname}_{txid}'
+
+def shell_escape_posix(arg):
+    # Identical to ShellEscape() in the C++ code
+    return "'" + arg.replace("'", "'\"'\"'") + "'"
 
 
 class NotificationsTest(BitcoinTestFramework):
@@ -29,10 +42,12 @@ class NotificationsTest(BitcoinTestFramework):
         self.num_nodes = 2
         self.setup_clean_chain = True
         self.uses_wallet = None
+        self.noban_tx_relay = True
 
     def setup_network(self):
         self.wallet = ''.join(chr(i) for i in range(FILE_CHAR_START, FILE_CHAR_END) if chr(i) not in FILE_CHARS_DISALLOWED)
         self.alertnotify_dir = os.path.join(self.options.tmpdir, "alertnotify")
+        self.alertnotify_file = os.path.join(self.alertnotify_dir, "alertnotify.txt")
         self.blocknotify_dir = os.path.join(self.options.tmpdir, "blocknotify")
         self.walletnotify_dir = os.path.join(self.options.tmpdir, "walletnotify")
         self.shutdownnotify_dir = os.path.join(self.options.tmpdir, "shutdownnotify")
@@ -42,13 +57,18 @@ class NotificationsTest(BitcoinTestFramework):
         os.mkdir(self.walletnotify_dir)
         os.mkdir(self.shutdownnotify_dir)
 
+        if platform.system() == 'Windows':
+            walletnotify_path = f"\"{os.path.join(self.walletnotify_dir, notify_outputname('%w', '%s'))}\""
+        else:
+            walletnotify_path = f"{shell_escape_posix(os.path.join(self.walletnotify_dir, ''))}{notify_outputname('%w', '%s')}"
+
         # -alertnotify and -blocknotify on node0, walletnotify on node1
         self.extra_args = [[
-            f"-alertnotify=echo > {os.path.join(self.alertnotify_dir, '%s')}",
-            f"-blocknotify=echo > {os.path.join(self.blocknotify_dir, '%s')}",
-            f"-shutdownnotify=echo > {self.shutdownnotify_file}",
+            f"-alertnotify=echo %s >> \"{self.alertnotify_file}\"",
+            f"-blocknotify=echo > \"{os.path.join(self.blocknotify_dir, '%s')}\"",
+            f"-shutdownnotify=echo > \"{self.shutdownnotify_file}\"",
         ], [
-            f"-walletnotify=echo %h_%b > {os.path.join(self.walletnotify_dir, notify_outputname('%w', '%s'))}",
+            f"-walletnotify=echo %h_%b > {walletnotify_path}",
         ]]
         self.wallet_names = [self.default_wallet_name, self.wallet]
         super().setup_network()
@@ -56,7 +76,7 @@ class NotificationsTest(BitcoinTestFramework):
     def run_test(self):
         if self.is_wallet_compiled():
             # Setup the descriptors to be imported to the wallet
-            xpriv = "tprv8ZgxMBicQKsPfHCsTwkiM1KT56RXbGGTqvc2hgqzycpwbHqqpcajQeMRZoBD35kW4RtyCemu6j34Ku5DEspmgjKdt2qe4SvRch5Kk8B8A2v"
+            xpriv = ExtendedPrivateKey.generate().to_string()
             desc_imports = [{
                 "desc": descsum_create(f"wpkh({xpriv}/0/*)"),
                 "timestamp": 0,
@@ -156,11 +176,55 @@ class NotificationsTest(BitcoinTestFramework):
             self.expect_wallet_notify([(bump2, blockheight2, blockhash2), (tx2, -1, UNCONFIRMED_HASH_STRING)])
             assert_equal(self.nodes[1].gettransaction(bump2)["confirmations"], 1)
 
-        # TODO: add test for `-alertnotify` large fork notifications
+            if platform.system() != 'Windows':
+                self.log.info("test -walletnotify replacement metacharacters in wallet name")
+                self.nodes[1].unloadwallet(self.wallet)
+                command_marker = os.path.join(self.options.tmpdir, "walletnotify_injected")
+                # The previous regex replacement expanded `$'` to the command suffix, breaking the shell-escaped wallet name's quote accounting
+                wallet_name = self.nodes[1].createwallet(f"$'$'; echo Pwned > {os.path.basename(command_marker)}; #")["name"]
+                txid = self.nodes[0].sendtoaddress(self.nodes[1].get_wallet_rpc(wallet_name).getnewaddress(), 1)
+                self.sync_mempools()
+                notify_path = os.path.join(self.walletnotify_dir, notify_outputname(wallet_name, txid))
+                self.wait_until(lambda: os.path.exists(command_marker) or os.path.exists(notify_path), timeout=10)
+                assert not os.path.exists(command_marker)
+                assert os.path.exists(notify_path)
+
+        self.log.info("test -alertnotify with large work invalid chain")
+        # create a bunch of invalid blocks
+        tip = self.nodes[0].getbestblockhash()
+        height = self.nodes[0].getblockcount() + 1
+        block_time = self.nodes[0].getblock(tip)['time'] + 1
+
+        invalid_blocks = []
+        for _ in range(7):  # invalid chain must be longer than 6 blocks to trigger warning
+            block = create_block(int(tip, 16), height=height, ntime=block_time)
+            # make block invalid by exceeding block subsidy
+            block.vtx[0].vout[0].nValue += 1
+            block.hashMerkleRoot = block.calc_merkle_root()
+            block.solve()
+            invalid_blocks.append(block)
+            tip = block.hash_hex
+            height += 1
+            block_time += 1
+
+        # submit headers of invalid blocks
+        for invalid_block in invalid_blocks:
+            self.nodes[0].submitheader(invalid_block.serialize().hex())
+        # submit invalid blocks in reverse order (tip first, to set m_best_invalid)
+        for invalid_block in reversed(invalid_blocks):
+            self.nodes[0].submitblock(invalid_block.serialize().hex())
+
+        self.wait_until(lambda: os.path.isfile(self.alertnotify_file), timeout=10)
+        self.wait_until(self.large_work_invalid_chain_warning_in_alert_file, timeout=10)
 
         self.log.info("test -shutdownnotify")
         self.stop_nodes()
         self.wait_until(lambda: os.path.isfile(self.shutdownnotify_file), timeout=10)
+
+    def large_work_invalid_chain_warning_in_alert_file(self):
+        with open(self.alertnotify_file, 'r') as f:
+            alert_text = f.read()
+        return LARGE_WORK_INVALID_CHAIN_WARNING in alert_text
 
     def expect_wallet_notify(self, tx_details):
         self.wait_until(lambda: len(os.listdir(self.walletnotify_dir)) >= len(tx_details), timeout=10)
@@ -171,7 +235,7 @@ class NotificationsTest(BitcoinTestFramework):
             fname = os.path.join(self.walletnotify_dir, notify_outputname(self.wallet, tx_id))
             # Wait for the cached writes to hit storage
             self.wait_until(lambda: os.path.getsize(fname) > 0, timeout=10)
-            with open(fname, 'rt', encoding='utf-8') as f:
+            with open(fname, 'rt') as f:
                 text = f.read()
                 # Universal newline ensures '\n' on 'nt'
                 assert_equal(text[-1], '\n')

@@ -1,9 +1,9 @@
-// Copyright (c) 2015-2021 The Bitcoin Core developers
+// Copyright (c) 2015-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <sync.h>
-#include <test/util/setup_common.h>
+#include <test/util/common.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -17,8 +17,10 @@ BOOST_AUTO_TEST_CASE(reverselock_basics)
     WAIT_LOCK(mutex, lock);
 
     BOOST_CHECK(lock.owns_lock());
+    AssertLockHeld(mutex);
     {
         REVERSE_LOCK(lock, mutex);
+        AssertLockNotHeld(mutex);
         BOOST_CHECK(!lock.owns_lock());
     }
     BOOST_CHECK(lock.owns_lock());
@@ -54,7 +56,7 @@ BOOST_AUTO_TEST_CASE(reverselock_errors)
     g_debug_lockorder_abort = false;
 
     // Make sure trying to reverse lock a previous lock fails
-    BOOST_CHECK_EXCEPTION(REVERSE_LOCK(lock2, mutex2), std::logic_error, HasReason("mutex2 was not most recent critical section locked"));
+    BOOST_CHECK_EXCEPTION(REVERSE_LOCK(lock2, mutex2), std::logic_error, HasReason{"mutex2 was not most recent critical section locked"});
     BOOST_CHECK(lock2.owns_lock());
 
     g_debug_lockorder_abort = prev;
@@ -65,14 +67,9 @@ BOOST_AUTO_TEST_CASE(reverselock_errors)
 
     BOOST_CHECK(!lock.owns_lock());
 
-    bool failed = false;
-    try {
-        REVERSE_LOCK(lock, mutex);
-    } catch(...) {
-        failed = true;
-    }
+    BOOST_CHECK_EXCEPTION(REVERSE_LOCK(lock, mutex), std::system_error,
+                          [](const std::system_error& e) { return e.code() == std::errc::operation_not_permitted; });
 
-    BOOST_CHECK(failed);
     BOOST_CHECK(!lock.owns_lock());
 
     // Locking the original lock after it has been taken by a reverse lock
@@ -86,7 +83,6 @@ BOOST_AUTO_TEST_CASE(reverselock_errors)
         BOOST_CHECK(!lock.owns_lock());
     }
 
-    BOOST_CHECK(failed);
     BOOST_CHECK(lock.owns_lock());
 }
 

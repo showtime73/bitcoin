@@ -88,14 +88,14 @@ static common::SettingsValue PruneSetting(bool prune_enabled, int prune_size_gb)
 static bool PruneEnabled(const common::SettingsValue& prune_setting)
 {
     // -prune=1 setting is manual pruning mode, so disabled for purposes of the gui
-    return SettingToInt(prune_setting, 0) > 1;
+    return SettingTo<int64_t>(prune_setting, 0) > 1;
 }
 
 //! Get pruning size value to show in GUI from bitcoin -prune setting. If
 //! pruning is not enabled, just show default recommended pruning size (2GB).
 static int PruneSizeGB(const common::SettingsValue& prune_setting)
 {
-    int value = SettingToInt(prune_setting, 0);
+    int value = SettingTo<int64_t>(prune_setting, 0);
     return value > 1 ? PruneMiBtoGB(value) : DEFAULT_PRUNE_TARGET_GB;
 }
 
@@ -469,9 +469,9 @@ QVariant OptionsModel::getOption(OptionID option, const std::string& suffix) con
                suffix.empty()          ? getOption(option, "-prev") :
                                          DEFAULT_PRUNE_TARGET_GB;
     case DatabaseCache:
-        return qlonglong(SettingToInt(setting(), DEFAULT_DB_CACHE >> 20));
+        return qlonglong(SettingTo<int64_t>(setting(), node::GetDefaultDBCache() / 1_MiB));
     case ThreadsScriptVerif:
-        return qlonglong(SettingToInt(setting(), DEFAULT_SCRIPTCHECK_THREADS));
+        return qlonglong(SettingTo<int64_t>(setting(), DEFAULT_SCRIPTCHECK_THREADS));
     case Listen:
         return SettingToBool(setting(), DEFAULT_LISTEN);
     case Server:
@@ -732,7 +732,7 @@ void OptionsModel::checkAndMigrate()
         // see https://github.com/bitcoin/bitcoin/pull/8273
         // force people to upgrade to the new value if they are using 100MB
         if (settingsVersion < 130000 && settings.contains("nDatabaseCache") && settings.value("nDatabaseCache").toLongLong() == 100)
-            settings.setValue("nDatabaseCache", (qint64)(DEFAULT_DB_CACHE >> 20));
+            settings.setValue("nDatabaseCache", qint64(DEFAULT_KERNEL_CACHE / 1_MiB));
 
         settings.setValue(strSettingsVersionKey, CLIENT_VERSION);
     }

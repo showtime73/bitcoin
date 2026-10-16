@@ -1,4 +1,4 @@
-// Copyright (c) 2025 The Bitcoin Core developers
+// Copyright (c) The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -14,6 +14,7 @@ struct ProxyServer<ThreadMap> final : public virtual ThreadMap::Server
 public:
     ProxyServer(Connection& connection);
     kj::Promise<void> makeThread(MakeThreadContext context) override;
+    kj::Promise<void> makePool(MakePoolContext context) override;
     Connection& m_connection;
 };
 

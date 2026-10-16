@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <ios>
 #include <string>
+#include <string_view>
 #include <vector>
 
 /**
@@ -58,14 +59,14 @@ enum Network {
 
 /// Prefix of an IPv6 address when it contains an embedded IPv4 address.
 /// Used when (un)serializing addresses in ADDRv1 format (pre-BIP155).
-static const std::array<uint8_t, 12> IPV4_IN_IPV6_PREFIX{
+inline constexpr std::array<uint8_t, 12> IPV4_IN_IPV6_PREFIX{
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF};
 
 /// Prefix of an IPv6 address when it contains an embedded TORv2 address.
 /// Used when (un)serializing addresses in ADDRv1 format (pre-BIP155).
 /// Such dummy IPv6 addresses are guaranteed to not be publicly routable as they
 /// fall under RFC4193's fc00::/7 subnet allocated to unique-local addresses.
-static const std::array<uint8_t, 6> TORV2_IN_IPV6_PREFIX{
+inline constexpr std::array<uint8_t, 6> TORV2_IN_IPV6_PREFIX{
     0xFD, 0x87, 0xD8, 0x7E, 0xEB, 0x43};
 
 /// Prefix of an IPv6 address when it contains an embedded "internal" address.
@@ -73,35 +74,35 @@ static const std::array<uint8_t, 6> TORV2_IN_IPV6_PREFIX{
 /// The prefix comes from 0xFD + SHA256("bitcoin")[0:5].
 /// Such dummy IPv6 addresses are guaranteed to not be publicly routable as they
 /// fall under RFC4193's fc00::/7 subnet allocated to unique-local addresses.
-static const std::array<uint8_t, 6> INTERNAL_IN_IPV6_PREFIX{
+inline constexpr std::array<uint8_t, 6> INTERNAL_IN_IPV6_PREFIX{
     0xFD, 0x6B, 0x88, 0xC0, 0x87, 0x24 // 0xFD + sha256("bitcoin")[0:5].
 };
 
 /// All CJDNS addresses start with 0xFC. See
 /// https://github.com/cjdelisle/cjdns/blob/master/doc/Whitepaper.md#pulling-it-all-together
-static constexpr uint8_t CJDNS_PREFIX{0xFC};
+inline constexpr uint8_t CJDNS_PREFIX{0xFC};
 
 /// Size of IPv4 address (in bytes).
-static constexpr size_t ADDR_IPV4_SIZE = 4;
+inline constexpr size_t ADDR_IPV4_SIZE = 4;
 
 /// Size of IPv6 address (in bytes).
-static constexpr size_t ADDR_IPV6_SIZE = 16;
+inline constexpr size_t ADDR_IPV6_SIZE = 16;
 
 /// Size of TORv3 address (in bytes). This is the length of just the address
 /// as used in BIP155, without the checksum and the version byte.
-static constexpr size_t ADDR_TORV3_SIZE = 32;
+inline constexpr size_t ADDR_TORV3_SIZE = 32;
 
 /// Size of I2P address (in bytes).
-static constexpr size_t ADDR_I2P_SIZE = 32;
+inline constexpr size_t ADDR_I2P_SIZE = 32;
 
 /// Size of CJDNS address (in bytes).
-static constexpr size_t ADDR_CJDNS_SIZE = 16;
+inline constexpr size_t ADDR_CJDNS_SIZE = 16;
 
 /// Size of "internal" (NET_INTERNAL) address (in bytes).
-static constexpr size_t ADDR_INTERNAL_SIZE = 10;
+inline constexpr size_t ADDR_INTERNAL_SIZE = 10;
 
 /// SAM 3.1 and earlier do not support specifying ports and force the port to 0.
-static constexpr uint16_t I2P_SAM31_PORT{0};
+inline constexpr uint16_t I2P_SAM31_PORT{0};
 
 std::string OnionToString(std::span<const uint8_t> addr);
 
@@ -151,7 +152,7 @@ public:
      * @returns Whether the operation was successful.
      * @see CNetAddr::IsTor(), CNetAddr::IsI2P()
      */
-    bool SetSpecial(const std::string& addr);
+    bool SetSpecial(std::string_view addr);
 
     bool IsBindAny() const; // INADDR_ANY equivalent
     [[nodiscard]] bool IsIPv4() const { return m_net == NET_IPV4; } // IPv4 mapped address (::FFFF:0:0/96, 0.0.0.0/0)
@@ -161,6 +162,7 @@ public:
     bool IsRFC6598() const; // IPv4 ISP-level NAT (100.64.0.0/10)
     bool IsRFC5737() const; // IPv4 documentation addresses (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24)
     bool IsRFC3849() const; // IPv6 documentation address (2001:0DB8::/32)
+    bool IsRFC9637() const; // IPv6 documentation address (3FFF::/20)
     bool IsRFC3927() const; // IPv4 autoconfig (169.254.0.0/16)
     bool IsRFC3964() const; // IPv6 6to4 tunnelling (2002::/16)
     bool IsRFC4193() const; // IPv6 unique local (FC00::/7)
@@ -205,11 +207,10 @@ public:
     std::vector<unsigned char> GetAddrBytes() const;
     int GetReachabilityFrom(const CNetAddr& paddrPartner) const;
 
-    explicit CNetAddr(const struct in6_addr& pipv6Addr, const uint32_t scope = 0);
+    explicit CNetAddr(const struct in6_addr& pipv6Addr, uint32_t scope = 0);
     bool GetIn6Addr(struct in6_addr* pipv6Addr) const;
 
     friend bool operator==(const CNetAddr& a, const CNetAddr& b);
-    friend bool operator!=(const CNetAddr& a, const CNetAddr& b) { return !(a == b); }
     friend bool operator<(const CNetAddr& a, const CNetAddr& b);
 
     /**
@@ -279,7 +280,7 @@ private:
      * @returns Whether the operation was successful.
      * @see CNetAddr::IsTor()
      */
-    bool SetTor(const std::string& addr);
+    bool SetTor(std::string_view addr);
 
     /**
      * Parse an I2P address and set this object to it.
@@ -288,7 +289,7 @@ private:
      * @returns Whether the operation was successful.
      * @see CNetAddr::IsI2P()
      */
-    bool SetI2P(const std::string& addr);
+    bool SetI2P(std::string_view addr);
 
     /**
      * Size of CNetAddr when serialized as ADDRv1 (pre-BIP155) (in bytes).
@@ -522,7 +523,6 @@ public:
     bool IsValid() const;
 
     friend bool operator==(const CSubNet& a, const CSubNet& b);
-    friend bool operator!=(const CSubNet& a, const CSubNet& b) { return !(a == b); }
     friend bool operator<(const CSubNet& a, const CSubNet& b);
 };
 
@@ -553,7 +553,6 @@ public:
      */
     [[nodiscard]] sa_family_t GetSAFamily() const;
     friend bool operator==(const CService& a, const CService& b);
-    friend bool operator!=(const CService& a, const CService& b) { return !(a == b); }
     friend bool operator<(const CService& a, const CService& b);
     std::vector<unsigned char> GetKey() const;
     std::string ToStringAddrPort() const;

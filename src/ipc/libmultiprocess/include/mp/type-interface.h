@@ -1,4 +1,4 @@
-// Copyright (c) 2025 The Bitcoin Core developers
+// Copyright (c) The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -85,7 +85,7 @@ decltype(auto) CustomReadField(TypeList<std::unique_ptr<LocalType>>,
     typename Decay<decltype(input.get())>::Calls* enable = nullptr)
 {
     using Interface = typename Decay<decltype(input.get())>::Calls;
-    if (input.has()) {
+    if (CustomHasField(TypeList<LocalType>(), invoke_context, input)) {
         return read_dest.construct(
                                    CustomMakeProxyClient<Interface, LocalType>(invoke_context, std::move(input.get())));
     }
@@ -101,7 +101,7 @@ decltype(auto) CustomReadField(TypeList<std::shared_ptr<LocalType>>,
     typename Decay<decltype(input.get())>::Calls* enable = nullptr)
 {
     using Interface = typename Decay<decltype(input.get())>::Calls;
-    if (input.has()) {
+    if (CustomHasField(TypeList<LocalType>(), invoke_context, input)) {
         return read_dest.construct(
             CustomMakeProxyClient<Interface, LocalType>(invoke_context, std::move(input.get())));
     }

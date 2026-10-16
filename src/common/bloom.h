@@ -6,16 +6,17 @@
 #define BITCOIN_COMMON_BLOOM_H
 
 #include <serialize.h>
-#include <span.h>
 
+#include <cstdint>
+#include <span>
 #include <vector>
 
 class COutPoint;
 class CTransaction;
 
 //! 20,000 items with fp rate < 0.1% or 10,000 items and <0.0001%
-static constexpr unsigned int MAX_BLOOM_FILTER_SIZE = 36000; // bytes
-static constexpr unsigned int MAX_HASH_FUNCS = 50;
+inline constexpr unsigned int MAX_BLOOM_FILTER_SIZE{36'000}; // bytes
+inline constexpr unsigned int MAX_HASH_FUNCS = 50;
 
 /**
  * First two bits of nFlags control how much IsRelevantAndUpdate actually updates
@@ -61,7 +62,7 @@ public:
      * It should generally always be a random value (and is largely only exposed for unit testing)
      * nFlags should be one of the BLOOM_UPDATE_* enums (not _MASK)
      */
-    CBloomFilter(const unsigned int nElements, const double nFPRate, const unsigned int nTweak, unsigned char nFlagsIn);
+    CBloomFilter(unsigned int nElements, double nFPRate, unsigned int nTweak, unsigned char nFlagsIn);
     CBloomFilter() : nHashFuncs(0), nTweak(0), nFlags(0) {}
 
     SERIALIZE_METHODS(CBloomFilter, obj) { READWRITE(obj.vData, obj.nHashFuncs, obj.nTweak, obj.nFlags); }
@@ -108,7 +109,7 @@ public:
 class CRollingBloomFilter
 {
 public:
-    CRollingBloomFilter(const unsigned int nElements, const double nFPRate);
+    CRollingBloomFilter(unsigned int nElements, double nFPRate);
 
     void insert(std::span<const unsigned char> vKey);
     bool contains(std::span<const unsigned char> vKey) const;

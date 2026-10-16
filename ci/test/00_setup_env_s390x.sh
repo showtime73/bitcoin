@@ -8,10 +8,13 @@ export LC_ALL=C.UTF-8
 
 export HOST=s390x-linux-gnu
 export PACKAGES="python3-zmq"
-export CONTAINER_NAME=ci_s390x
-export CI_IMAGE_NAME_TAG="mirror.gcr.io/ubuntu:24.04"
+export CI_IMAGE_NAME_TAG="mirror.gcr.io/ubuntu:26.04"
 export CI_IMAGE_PLATFORM="linux/s390x"
-export TEST_RUNNER_EXTRA="--exclude rpc_bind,feature_bind_extra"  # Excluded for now, see https://github.com/bitcoin/bitcoin/issues/17765#issuecomment-602068547
+# bind tests excluded for now: under qemu-user, s390x userspace reads socket
+# information produced by the x86 host kernel with a different byte order.
+export TEST_RUNNER_EXTRA="--exclude rpc_bind --exclude feature_bind_extra"
 export RUN_FUNCTIONAL_TESTS=true
-export GOAL="install"
-export BITCOIN_CONFIG="-DREDUCE_EXPORTS=ON"
+printf -v BITCOIN_CONFIG "%q " \
+  --preset=dev-mode \
+  -DREDUCE_EXPORTS=ON
+export BITCOIN_CONFIG

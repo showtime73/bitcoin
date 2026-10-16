@@ -11,6 +11,7 @@
 #include <compat/endian.h>
 #include <prevector.h>
 #include <span.h>
+#include <util/overflow.h>
 
 #include <algorithm>
 #include <concepts>
@@ -21,7 +22,9 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -29,10 +32,10 @@
  * The maximum size of a serialized object in bytes or number of elements
  * (for eg vectors) when the size is encoded as CompactSize.
  */
-static constexpr uint64_t MAX_SIZE = 0x02000000;
+inline constexpr uint64_t MAX_SIZE = 0x02000000;
 
 /** Maximum amount of memory (in bytes) to allocate at once when deserializing vectors. */
-static const unsigned int MAX_VECTOR_ALLOCATE = 5000000;
+inline constexpr unsigned int MAX_VECTOR_ALLOCATE{5'000'000};
 
 /**
  * Dummy data type to identify deserializing constructors.
@@ -46,7 +49,7 @@ static const unsigned int MAX_VECTOR_ALLOCATE = 5000000;
  * is likely the only way to do so.
  */
 struct deserialize_type {};
-constexpr deserialize_type deserialize {};
+inline constexpr deserialize_type deserialize {};
 
 /*
  * Lowest-level serialization and conversion.
@@ -58,11 +61,6 @@ template<typename Stream> inline void ser_writedata8(Stream &s, uint8_t obj)
 template<typename Stream> inline void ser_writedata16(Stream &s, uint16_t obj)
 {
     obj = htole16_internal(obj);
-    s.write(std::as_bytes(std::span{&obj, 1}));
-}
-template<typename Stream> inline void ser_writedata16be(Stream &s, uint16_t obj)
-{
-    obj = htobe16_internal(obj);
     s.write(std::as_bytes(std::span{&obj, 1}));
 }
 template<typename Stream> inline void ser_writedata32(Stream &s, uint32_t obj)
@@ -91,12 +89,6 @@ template<typename Stream> inline uint16_t ser_readdata16(Stream &s)
     uint16_t obj;
     s.read(std::as_writable_bytes(std::span{&obj, 1}));
     return le16toh_internal(obj);
-}
-template<typename Stream> inline uint16_t ser_readdata16be(Stream &s)
-{
-    uint16_t obj;
-    s.read(std::as_writable_bytes(std::span{&obj, 1}));
-    return be16toh_internal(obj);
 }
 template<typename Stream> inline uint32_t ser_readdata32(Stream &s)
 {
@@ -436,7 +428,7 @@ template<typename Stream, VarIntMode Mode, typename I>
 void WriteVarInt(Stream& os, I n)
 {
     CheckVarIntMode<Mode, I>();
-    unsigned char tmp[(sizeof(n)*8+6)/7];
+    unsigned char tmp[CeilDiv(sizeof(n) * 8, 7u)];
     int len=0;
     while(true) {
         tmp[len] = (n & 0x7F) | (len ? 0x80 : 0x00);
@@ -502,6 +494,7 @@ static inline Wrapper<Formatter, T&> Using(T&& t) { return Wrapper<Formatter, T&
 #define VARINT(obj) Using<VarIntFormatter<VarIntMode::DEFAULT>>(obj)
 #define COMPACTSIZE(obj) Using<CompactSizeFormatter<true>>(obj)
 #define LIMITED_STRING(obj,n) Using<LimitedStringFormatter<n>>(obj)
+#define LIMITED_VECTOR(obj,n) Using<LimitedVectorFormatter<n>>(obj)
 
 /** Serialization wrapper class for integers in VarInt format. */
 template<VarIntMode Mode>
@@ -609,6 +602,19 @@ struct ChronoFormatter {
 template <typename U>
 using LossyChronoFormatter = ChronoFormatter<U, true>;
 
+class CompactSizeReader
+{
+protected:
+    uint64_t& n;
+public:
+    explicit CompactSizeReader(uint64_t& n_in) : n(n_in) {}
+
+    template<typename Stream>
+    void Unserialize(Stream &s) const {
+        n = ReadCompactSize<Stream>(s);
+    }
+};
+
 class CompactSizeWriter
 {
 protected:
@@ -702,6 +708,12 @@ template<typename Stream, typename C> void Serialize(Stream& os, const std::basi
 template<typename Stream, typename C> void Unserialize(Stream& is, std::basic_string<C>& str);
 
 /**
+ *  string_view
+ */
+template<typename Stream, typename C> void Serialize(Stream& os, const std::basic_string_view<C>& str);
+template<typename Stream, typename C> void Unserialize(Stream& is, std::basic_string_view<C>& str) = delete;
+
+/**
  * prevector
  */
 template<typename Stream, unsigned int N, typename T> inline void Serialize(Stream& os, const prevector<N, T>& v);
@@ -779,6 +791,35 @@ struct DefaultFormatter
     static void Unser(Stream& s, T& t) { Unserialize(s, t); }
 };
 
+/**
+ * Limited vector formatter. Throws an error if a vector is oversized.
+ */
+
+template<size_t Limit, class Formatter = DefaultFormatter>
+struct LimitedVectorFormatter
+{
+    template<typename Stream, typename V>
+    void Unser(Stream& s, V& v)
+    {
+        Formatter formatter;
+        v.clear();
+        size_t size = ReadCompactSize(s);
+        if (size > Limit) {
+            throw std::ios_base::failure("Vector length limit exceeded");
+        }
+        v.reserve(size);
+        for (size_t i = 0; i < size; ++i) {
+            v.emplace_back();
+            formatter.Unser(s, v.back());
+        }
+    }
+
+    template<typename Stream, typename V>
+    void Ser(Stream& s, const V& v)
+    {
+        VectorFormatter<Formatter>{}.Ser(s, v);
+    }
+};
 
 
 
@@ -803,7 +844,17 @@ void Unserialize(Stream& is, std::basic_string<C>& str)
         is.read(MakeWritableByteSpan(str));
 }
 
-
+/**
+ * string_view
+ */
+template<typename Stream, typename C>
+void Serialize(Stream& os, const std::basic_string_view<C>& str)
+{
+    WriteCompactSize(os, str.size());
+    if (!str.empty()) {
+        os.write(MakeByteSpan(str));
+    }
+}
 
 /**
  * prevector
@@ -1062,31 +1113,32 @@ struct ActionUnserialize {
 class SizeComputer
 {
 protected:
-    size_t nSize{0};
+    uint64_t m_size{0};
 
 public:
     SizeComputer() = default;
 
     void write(std::span<const std::byte> src)
     {
-        this->nSize += src.size();
+        m_size += src.size();
     }
 
-    /** Pretend _nSize bytes are written, without specifying them. */
-    void seek(size_t _nSize)
+    /** Pretend this many bytes are written, without specifying them. */
+    void seek(uint64_t num)
     {
-        this->nSize += _nSize;
+        m_size += num;
     }
 
-    template<typename T>
+    template <typename T>
     SizeComputer& operator<<(const T& obj)
     {
         ::Serialize(*this, obj);
-        return (*this);
+        return *this;
     }
 
-    size_t size() const {
-        return nSize;
+    uint64_t size() const
+    {
+        return m_size;
     }
 };
 
@@ -1102,7 +1154,7 @@ inline void WriteCompactSize(SizeComputer &s, uint64_t nSize)
 }
 
 template <typename T>
-size_t GetSerializeSize(const T& t)
+uint64_t GetSerializeSize(const T& t)
 {
     return (SizeComputer() << t).size();
 }
@@ -1137,7 +1189,7 @@ public:
     void write(std::span<const std::byte> src) { GetStream().write(src); }
     void read(std::span<std::byte> dst) { GetStream().read(dst); }
     void ignore(size_t num) { GetStream().ignore(num); }
-    bool eof() const { return GetStream().eof(); }
+    bool empty() const { return GetStream().empty(); }
     size_t size() const { return GetStream().size(); }
 
     //! Get reference to stream parameters.

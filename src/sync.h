@@ -1,16 +1,13 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2022 The Bitcoin Core developers
+// Copyright (c) 2009-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_SYNC_H
 #define BITCOIN_SYNC_H
 
-#ifdef DEBUG_LOCKCONTENTION
-#include <logging.h>
-#include <logging/timer.h>
-#endif
-
+// This header declares threading primitives compatible with Clang
+// Thread Safety Analysis and provides appropriate annotation macros.
 #include <threadsafety.h> // IWYU pragma: export
 #include <util/macros.h>
 
@@ -39,12 +36,6 @@ LOCK2(mutex1, mutex2);
 
 TRY_LOCK(mutex, name);
     std::unique_lock<std::recursive_mutex> name(mutex, std::try_to_lock_t);
-
-ENTER_CRITICAL_SECTION(mutex); // no RAII
-    mutex.lock();
-
-LEAVE_CRITICAL_SECTION(mutex); // no RAII
-    mutex.unlock();
  */
 
 ///////////////////////////////
@@ -82,6 +73,16 @@ template <typename MutexType>
 void AssertLockNotHeldInternal(const char* pszName, const char* pszFile, int nLine, MutexType* cs) LOCKS_EXCLUDED(cs) {}
 inline void DeleteLock(void* cs) {}
 inline bool LockStackEmpty() { return true; }
+#endif
+
+/*
+ * Called when a mutex fails to lock immediately because it is held by another
+ * thread, or spuriously. Responsible for locking the lock before returning.
+ */
+#ifdef DEBUG_LOCKCONTENTION
+
+template <typename LockType>
+void ContendedLock(std::string_view name, std::string_view file, int nLine, LockType& lock);
 #endif
 
 /**
@@ -158,10 +159,12 @@ private:
     {
         EnterCritical(pszName, pszFile, nLine, Base::mutex());
 #ifdef DEBUG_LOCKCONTENTION
-        if (Base::try_lock()) return;
-        LOG_TIME_MICROS_WITH_CATEGORY(strprintf("lock contention %s, %s:%d", pszName, pszFile, nLine), BCLog::LOCK);
-#endif
+        if (!Base::try_lock()) {
+            ContendedLock(pszName, pszFile, nLine, static_cast<Base&>(*this));
+        }
+#else
         Base::lock();
+#endif
     }
 
     bool TryEnter(const char* pszName, const char* pszFile, int nLine)
@@ -248,7 +251,7 @@ public:
 // it is not possible to use the lock's copy of the mutex for that purpose.
 // Instead, the original mutex needs to be passed back to the reverse_lock for
 // the sake of thread-safety analysis, but it is not actually used otherwise.
-#define REVERSE_LOCK(g, cs) typename std::decay<decltype(g)>::type::reverse_lock UNIQUE_NAME(revlock)(g, cs, #cs, __FILE__, __LINE__)
+#define REVERSE_LOCK(g, cs) typename std::decay<decltype(g)>::type::reverse_lock BITCOIN_UNIQUE_NAME(revlock)(g, cs, #cs, __FILE__, __LINE__)
 
 // When locking a Mutex, require negative capability to ensure the lock
 // is not already held
@@ -262,27 +265,13 @@ inline MutexType& MaybeCheckNotHeld(MutexType& m) LOCKS_EXCLUDED(m) LOCK_RETURNE
 template <typename MutexType>
 inline MutexType* MaybeCheckNotHeld(MutexType* m) LOCKS_EXCLUDED(m) LOCK_RETURNED(m) { return m; }
 
-#define LOCK(cs) UniqueLock UNIQUE_NAME(criticalblock)(MaybeCheckNotHeld(cs), #cs, __FILE__, __LINE__)
+#define LOCK(cs) UniqueLock BITCOIN_UNIQUE_NAME(criticalblock)(MaybeCheckNotHeld(cs), #cs, __FILE__, __LINE__)
 #define LOCK2(cs1, cs2)                                               \
     UniqueLock criticalblock1(MaybeCheckNotHeld(cs1), #cs1, __FILE__, __LINE__); \
     UniqueLock criticalblock2(MaybeCheckNotHeld(cs2), #cs2, __FILE__, __LINE__)
 #define LOCK_ARGS(cs) MaybeCheckNotHeld(cs), #cs, __FILE__, __LINE__
 #define TRY_LOCK(cs, name) UniqueLock name(LOCK_ARGS(cs), true)
 #define WAIT_LOCK(cs, name) UniqueLock name(LOCK_ARGS(cs))
-
-#define ENTER_CRITICAL_SECTION(cs)                            \
-    {                                                         \
-        EnterCritical(#cs, __FILE__, __LINE__, &cs); \
-        (cs).lock();                                          \
-    }
-
-#define LEAVE_CRITICAL_SECTION(cs)                                          \
-    {                                                                       \
-        std::string lockname;                                               \
-        CheckLastCritical((void*)(&cs), lockname, #cs, __FILE__, __LINE__); \
-        (cs).unlock();                                                      \
-        LeaveCritical();                                                    \
-    }
 
 //! Run code while locking a mutex.
 //!
@@ -297,11 +286,11 @@ inline MutexType* MaybeCheckNotHeld(MutexType* m) LOCKS_EXCLUDED(m) LOCK_RETURNE
 //! Since the return type deduction follows that of decltype(auto), while the
 //! deduced type of:
 //!
-//!   WITH_LOCK(cs, return {int i = 1; return i;});
+//!   WITH_LOCK(cs, int i = 1; return i);
 //!
 //! is int, the deduced type of:
 //!
-//!   WITH_LOCK(cs, return {int j = 1; return (j);});
+//!   WITH_LOCK(cs, int j = 1; return (j));
 //!
 //! is &int, a reference to a local variable
 //!

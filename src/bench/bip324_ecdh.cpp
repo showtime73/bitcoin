@@ -1,4 +1,4 @@
-// Copyright (c) 2022 The Bitcoin Core developers
+// Copyright (c) 2022-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <span>
 
 static void BIP324_ECDH(benchmark::Bench& bench)
 {
@@ -46,4 +47,4 @@ static void BIP324_ECDH(benchmark::Bench& bench)
     });
 }
 
-BENCHMARK(BIP324_ECDH, benchmark::PriorityLevel::HIGH);
+BENCHMARK(BIP324_ECDH);

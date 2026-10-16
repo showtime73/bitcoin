@@ -1,4 +1,4 @@
-// Copyright (c) 2015-2022 The Bitcoin Core developers
+// Copyright (c) 2015-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -8,15 +8,16 @@
 #include <key.h>
 #include <prevector.h>
 #include <random.h>
+#include <script/script.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
 static const size_t BATCHES = 101;
 static const size_t BATCH_SIZE = 30;
-static const int PREVECTOR_SIZE = 28;
 static const unsigned int QUEUE_BATCH_SIZE = 128;
 
 // This Benchmark tests the CheckQueue with a slightly realistic workload,
@@ -30,9 +31,9 @@ static void CCheckQueueSpeedPrevectorJob(benchmark::Bench& bench)
     ECC_Context ecc_context{};
 
     struct PrevectorJob {
-        prevector<PREVECTOR_SIZE, uint8_t> p;
+        prevector<CScriptBase::STATIC_SIZE, uint8_t> p;
         explicit PrevectorJob(FastRandomContext& insecure_rand){
-            p.resize(insecure_rand.randrange(PREVECTOR_SIZE*2));
+            p.resize(insecure_rand.randrange(CScriptBase::STATIC_SIZE * 2));
         }
         std::optional<int> operator()()
         {
@@ -65,4 +66,4 @@ static void CCheckQueueSpeedPrevectorJob(benchmark::Bench& bench)
         control.Complete();
     });
 }
-BENCHMARK(CCheckQueueSpeedPrevectorJob, benchmark::PriorityLevel::HIGH);
+BENCHMARK(CCheckQueueSpeedPrevectorJob);

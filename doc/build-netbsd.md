@@ -1,8 +1,8 @@
 # NetBSD Build Guide
 
-**Updated for NetBSD [10.1](https://netbsd.org/releases/formal-10/NetBSD-10.1.html)**
+Bitcoin Core is supported on all [supported NetBSD releases](https://www.netbsd.org/releases/).
 
-This guide describes how to build bitcoind, command-line utilities, and GUI on NetBSD.
+This guide describes how to build bitcoind, command-line utilities, and GUI on the latest release.
 
 ## Preparation
 
@@ -12,24 +12,24 @@ Install the required dependencies the usual way you [install software on NetBSD]
 The example commands below use `pkgin`.
 
 ```bash
-pkgin install git cmake pkg-config boost libevent
+pkgin install git cmake boost
 ```
 
-NetBSD currently ships with an older version of `gcc` than is needed to build. You should upgrade your `gcc` and then pass this new version to the configure script.
+SQLite is required for the wallet:
 
-For example, grab `gcc12`:
-```
-pkgin install gcc12
-```
-
-Then, when configuring, pass the following:
 ```bash
-cmake -B build
-    ...
-    -DCMAKE_C_COMPILER="/usr/pkg/gcc12/bin/gcc" \
-    -DCMAKE_CXX_COMPILER="/usr/pkg/gcc12/bin/g++" \
-    ...
+pkgin install sqlite3
 ```
+
+To build Bitcoin Core without the wallet, use `-DENABLE_WALLET=OFF`.
+
+Cap'n Proto is needed for IPC functionality (see [multiprocess.md](multiprocess.md)):
+
+```bash
+pkgin install capnproto pkgconf
+```
+
+Compile with `-DENABLE_IPC=OFF` if you do not need IPC functionality.
 
 See [dependencies.md](dependencies.md) for a complete overview.
 
@@ -42,18 +42,6 @@ git clone https://github.com/bitcoin/bitcoin.git
 ```
 
 ### 3. Install Optional Dependencies
-
-#### Wallet Dependencies
-
-It is not necessary to build wallet functionality to run bitcoind or the GUI.
-
-###### Descriptor Wallet Support
-
-`sqlite3` is required to enable support for [descriptor wallets](https://github.com/bitcoin/bitcoin/blob/master/doc/descriptors.md).
-
-```bash
-pkgin install sqlite3
-```
 
 #### GUI Dependencies
 ###### Qt6
@@ -78,9 +66,9 @@ Otherwise, if you don't need QR encoding support, use the `-DWITH_QRENCODE=OFF` 
 #### Notifications
 ###### ZeroMQ
 
-Bitcoin Core can provide notifications via ZeroMQ. If the package is installed, support will be compiled in.
+Bitcoin Core can provide notifications via ZeroMQ. To compile ZMQ support, install the following dependency and pass `-DWITH_ZMQ=ON` when configuring.
 ```bash
-pkgin zeromq
+pkgin install zeromq pkgconf
 ```
 
 #### Test Suite Dependencies
@@ -89,7 +77,14 @@ There is an included test suite that is useful for testing code changes when dev
 To run the test suite (recommended), you will need to have Python 3 installed:
 
 ```bash
-pkgin install python310 py310-zmq
+pkgin install python313 py313-zmq lsof
+```
+
+When the `lsof` binary package was built for a different point release, it might be necessary to force its installation as follows:
+
+```bash
+echo "CHECK_OSABI=no" >> /etc/pkg_install.conf
+pkgin install lsof
 ```
 
 ## Building Bitcoin Core
@@ -111,5 +106,5 @@ Build and run the tests:
 
 ```bash
 cmake --build build     # Append "-j N" for N parallel jobs.
-ctest --test-dir build  # Append "-j N" for N parallel tests. Some tests are disabled if Python 3 is not available.
+ctest --test-dir build  # Append "-j N" for N parallel tests.
 ```

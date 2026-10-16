@@ -1,4 +1,4 @@
-// Copyright (c) 2011-2022 The Bitcoin Core developers
+// Copyright (c) 2011-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -6,8 +6,8 @@
 #define BITCOIN_QT_TRANSACTIONRECORD_H
 
 #include <consensus/amount.h>
+#include <primitives/transaction_identifier.h>
 #include <uint256.h>
-#include <util/transaction_identifier.h>
 
 #include <QList>
 #include <QString>
@@ -73,7 +73,7 @@ public:
     };
 
     /** Number of confirmation recommended for accepting a transaction */
-    static const int RecommendedNumConfirmations = 6;
+    static constexpr int RecommendedNumConfirmations{6};
 
     TransactionRecord():
             hash(), time(0), type(Other), debit(0), credit(0), idx(0)

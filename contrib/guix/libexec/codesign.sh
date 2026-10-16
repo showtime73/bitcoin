@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Copyright (c) 2021-2022 The Bitcoin Core developers
+# Copyright (c) The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
-# file COPYING or http://www.opensource.org/licenses/mit-license.php.
-export LC_ALL=C
-set -e -o pipefail
+# file COPYING or https://opensource.org/license/mit.
+export LC_ALL=C.UTF-8
+set -o errexit -o pipefail
 
 # Environment variables for determinism
 export TAR_OPTIONS="--owner=0 --group=0 --numeric-owner --mtime='@${SOURCE_DATE_EPOCH}' --sort=name"
@@ -85,8 +85,13 @@ mkdir -p "$DISTSRC"
                 osslsigncode attach-signature \
                                  -in "${bin}" \
                                  -out "${WORKDIR}/${bin_base/-unsigned}" \
-                                 -CAfile "$GUIX_ENVIRONMENT/etc/ssl/certs/ca-certificates.crt" \
                                  -sigin codesignatures/win/"${bin_base}".pem
+                osslsigncode verify \
+                                 -CAfile "$GUIX_ENVIRONMENT/etc/ssl/certs/ca-certificates.crt" \
+                                 -TSA-CAfile "$GUIX_ENVIRONMENT/etc/ssl/certs/ca-certificates.crt" \
+                                 -ignore-crl \
+                                 -ignore-cdp \
+                                 -in "${WORKDIR}/${bin_base/-unsigned}"
             done
 
             # Move installer to outdir
@@ -110,7 +115,7 @@ mkdir -p "$DISTSRC"
 
             # Apply detached codesignatures (in-place)
             signapple apply dist/Bitcoin-Qt.app codesignatures/osx/"${HOST}"/dist/Bitcoin-Qt.app
-            find "${DISTNAME}" -wholename "*/bin/*" -type f | while read -r bin
+            find "${DISTNAME}" \( -wholename "*/bin/*" -o -wholename "*/libexec/*" \) -type f | while read -r bin
             do
                 signapple apply "${bin}" "codesignatures/osx/${HOST}/${bin}.${ARCH}sign"
             done
@@ -141,6 +146,7 @@ mv --no-target-directory "$OUTDIR" "$ACTUAL_OUTDIR" \
     || ( rm -rf "$ACTUAL_OUTDIR" && exit 1 )
 
 (
+    tmp="$(mktemp)"
     cd /outdir-base
     {
         echo "$CODESIGNING_TARBALL"
@@ -149,5 +155,6 @@ mv --no-target-directory "$OUTDIR" "$ACTUAL_OUTDIR" \
     } | xargs realpath --relative-base="$PWD" \
         | xargs sha256sum \
         | sort -k2 \
-        | sponge "$ACTUAL_OUTDIR"/SHA256SUMS.part
+        > "$tmp";
+    mv "$tmp" "$ACTUAL_OUTDIR"/SHA256SUMS.part
 )

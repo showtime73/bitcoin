@@ -3,20 +3,25 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <util/fs_helpers.h>
-
 #include <bitcoin-build-config.h> // IWYU pragma: keep
 
-#include <logging.h>
+#include <util/fs_helpers.h>
+#include <random.h>
 #include <sync.h>
+#include <tinyformat.h>
+#include <util/byte_units.h>
+#include <util/check.h>
 #include <util/fs.h>
+#include <util/log.h>
 #include <util/syserror.h>
 
 #include <cerrno>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -24,11 +29,17 @@
 #ifndef WIN32
 #include <fcntl.h>
 #include <sys/resource.h>
+#include <sys/types.h>
 #include <unistd.h>
 #else
 #include <io.h>
 #include <shlobj.h>
 #endif // WIN32
+
+#ifdef __APPLE__
+#include <sys/mount.h>
+#include <sys/param.h>
+#endif
 
 /** Mutex to protect dir_locks. */
 static GlobalMutex cs_dir_locks;
@@ -45,7 +56,7 @@ LockResult LockDirectory(const fs::path& directory, const fs::path& lockfile_nam
     fs::path pathLockFile = directory / lockfile_name;
 
     // If a lock for this directory already exists in the map, don't try to re-lock it
-    if (dir_locks.count(fs::PathToString(pathLockFile))) {
+    if (dir_locks.contains(fs::PathToString(pathLockFile))) {
         return LockResult::Success;
     }
 
@@ -81,7 +92,7 @@ void ReleaseDirectoryLocks()
 
 bool CheckDiskSpace(const fs::path& dir, uint64_t additional_bytes)
 {
-    constexpr uint64_t min_disk_space = 52428800; // 50 MiB
+    constexpr uint64_t min_disk_space{50_MiB};
 
     uint64_t free_bytes_available = fs::space(dir).available;
     return free_bytes_available >= min_disk_space + additional_bytes;
@@ -97,28 +108,28 @@ std::streampos GetFileSize(const char* path, std::streamsize max)
 bool FileCommit(FILE* file)
 {
     if (fflush(file) != 0) { // harmless if redundantly called
-        LogPrintf("fflush failed: %s\n", SysErrorString(errno));
+        LogError("fflush failed: %s", SysErrorString(errno));
         return false;
     }
 #ifdef WIN32
     HANDLE hFile = (HANDLE)_get_osfhandle(_fileno(file));
     if (FlushFileBuffers(hFile) == 0) {
-        LogPrintf("FlushFileBuffers failed: %s\n", Win32ErrorString(GetLastError()));
+        LogError("FlushFileBuffers failed: %s", Win32ErrorString(GetLastError()));
         return false;
     }
 #elif defined(__APPLE__) && defined(F_FULLFSYNC)
     if (fcntl(fileno(file), F_FULLFSYNC, 0) == -1) { // Manpage says "value other than -1" is returned on success
-        LogPrintf("fcntl F_FULLFSYNC failed: %s\n", SysErrorString(errno));
+        LogError("fcntl F_FULLFSYNC failed: %s", SysErrorString(errno));
         return false;
     }
 #elif HAVE_FDATASYNC
     if (fdatasync(fileno(file)) != 0 && errno != EINVAL) { // Ignore EINVAL for filesystems that don't support sync
-        LogPrintf("fdatasync failed: %s\n", SysErrorString(errno));
+        LogError("fdatasync failed: %s", SysErrorString(errno));
         return false;
     }
 #else
     if (fsync(fileno(file)) != 0 && errno != EINVAL) {
-        LogPrintf("fsync failed: %s\n", SysErrorString(errno));
+        LogError("fsync failed: %s", SysErrorString(errno));
         return false;
     }
 #endif
@@ -145,27 +156,40 @@ bool TruncateFile(FILE* file, unsigned int length)
 #endif
 }
 
-/**
- * this function tries to raise the file descriptor limit to the requested number.
- * It returns the actual file descriptor limit (which may be more or less than nMinFD)
- */
-int RaiseFileDescriptorLimit(int nMinFD)
+int RaiseFileDescriptorLimit(int min_fd)
 {
+    Assert(min_fd >= 0);
 #if defined(WIN32)
     return 2048;
 #else
     struct rlimit limitFD;
     if (getrlimit(RLIMIT_NOFILE, &limitFD) != -1) {
-        if (limitFD.rlim_cur < (rlim_t)nMinFD) {
-            limitFD.rlim_cur = nMinFD;
-            if (limitFD.rlim_cur > limitFD.rlim_max)
+        // If the current soft limit is already higher, don't raise it
+        if (limitFD.rlim_cur != RLIM_INFINITY && std::cmp_less(limitFD.rlim_cur, min_fd)) {
+            const auto current_limit{limitFD.rlim_cur};
+            static_assert(std::in_range<rlim_t>(std::numeric_limits<int>::max()));
+            limitFD.rlim_cur = static_cast<rlim_t>(min_fd);
+            // Don't raise soft limit beyond hard limit
+            if ((limitFD.rlim_max != RLIM_INFINITY) && (limitFD.rlim_cur > limitFD.rlim_max)) {
                 limitFD.rlim_cur = limitFD.rlim_max;
-            setrlimit(RLIMIT_NOFILE, &limitFD);
-            getrlimit(RLIMIT_NOFILE, &limitFD);
+            }
+            if (current_limit != limitFD.rlim_cur) {
+                setrlimit(RLIMIT_NOFILE, &limitFD);
+                getrlimit(RLIMIT_NOFILE, &limitFD);
+            }
         }
-        return limitFD.rlim_cur;
+        // Check the (possibly raised) current soft limit against the special
+        // value of RLIM_INFINITY. Some platforms implement this as the maximum
+        // uint64, others as int64 (-1). Avoid casting even if the return type
+        // is changed to uint64_t. We also cap unlikely but possible values
+        // that would overflow int.
+        if (limitFD.rlim_cur == RLIM_INFINITY ||
+            std::cmp_greater_equal(limitFD.rlim_cur, std::numeric_limits<int>::max())) {
+            return std::numeric_limits<int>::max();
+        }
+        return static_cast<int>(limitFD.rlim_cur);
     }
-    return nMinFD; // getrlimit failed, assume it's fine
+    return min_fd; // getrlimit failed, assume it's fine
 #endif
 }
 
@@ -230,7 +254,7 @@ fs::path GetSpecialFolderPath(int nFolder, bool fCreate)
         return fs::path(pszPath);
     }
 
-    LogPrintf("SHGetSpecialFolderPathW() failed, could not obtain requested path.\n");
+    LogError("SHGetSpecialFolderPathW() failed, could not obtain requested path.");
     return fs::path("");
 }
 #endif
@@ -298,3 +322,31 @@ std::optional<fs::perms> InterpretPermString(const std::string& s)
         return std::nullopt;
     }
 }
+
+bool IsDirWritable(const fs::path& dir_path)
+{
+    // Attempt to create a tmp file in the directory
+    if (!fs::is_directory(dir_path)) throw std::runtime_error(strprintf("Path %s is not a directory", fs::PathToString(dir_path)));
+    FastRandomContext rng;
+    const auto tmp = dir_path / fs::PathFromString(strprintf(".tmp_%d", rng.rand64()));
+
+    if (const auto created{fsbridge::fopen(tmp, "wx")}) {
+        std::fclose(created);
+        std::error_code ec;
+        fs::remove(tmp, ec); // clean up, ignore errors
+        return true;
+    }
+    return false;
+}
+
+#ifdef __APPLE__
+FSType GetFilesystemType(const fs::path& path)
+{
+    if (struct statfs fs_info; statfs(path.c_str(), &fs_info)) {
+        return FSType::ERROR;
+    } else if (std::string_view{fs_info.f_fstypename} == "exfat") {
+        return FSType::EXFAT;
+    }
+    return FSType::OTHER;
+}
+#endif

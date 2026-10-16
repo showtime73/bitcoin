@@ -8,6 +8,7 @@
 #include <consensus/consensus.h>
 #include <consensus/validation.h>
 #include <kernel/coinstats.h>
+#include <node/block_template_manager.h>
 #include <node/blockstorage.h>
 #include <node/utxo_snapshot.h>
 #include <primitives/block.h>
@@ -21,6 +22,7 @@
 #include <test/fuzz/util.h>
 #include <test/util/mining.h>
 #include <test/util/setup_common.h>
+#include <test/util/time.h>
 #include <uint256.h>
 #include <util/check.h>
 #include <util/fs.h>
@@ -57,8 +59,8 @@ void sanity_check_snapshot()
     // Connect the chain to the tmp chainman and sanity check the chainparams snapshot values.
     LOCK(cs_main);
     auto& cs{node.chainman->ActiveChainstate()};
-    cs.ForceFlushStateToDisk();
-    const auto stats{*Assert(kernel::ComputeUTXOStats(kernel::CoinStatsHashType::HASH_SERIALIZED, &cs.CoinsDB(), node.chainman->m_blockman))};
+    cs.ForceFlushStateToDisk(/*wipe_cache=*/false);
+    const auto stats{*Assert(kernel::ComputeUTXOStats(kernel::CoinStatsHashType::HASH_SERIALIZED, cs.CoinsDB(), node.chainman->m_blockman))};
     const auto cp_au_data{*Assert(node.chainman->GetParams().AssumeutxoForHeight(2 * COINBASE_MATURITY))};
     Assert(stats.nHeight == cp_au_data.height);
     Assert(stats.nTransactions + 1 == cp_au_data.m_chain_tx_count); // +1 for the genesis tx.
@@ -72,7 +74,7 @@ void initialize_chain()
     const auto params{CreateChainParams(ArgsManager{}, ChainType::REGTEST)};
     static const auto chain{CreateBlockChain(2 * COINBASE_MATURITY, *params)};
     g_chain = &chain;
-    SetMockTime(chain.back()->Time());
+    FakeNodeClock node_clock{chain.back()->Time()};
 
     // Make sure we can generate a valid snapshot.
     sanity_check_snapshot();
@@ -89,7 +91,7 @@ void initialize_chain()
         auto& chainman{*setup->m_node.chainman};
         for (const auto& block : chain) {
             BlockValidationState dummy;
-            bool processed{chainman.ProcessNewBlockHeaders({{block->GetBlockHeader()}}, true, dummy)};
+            bool processed{chainman.ProcessNewBlockHeaders({{*block}}, true, dummy)};
             Assert(processed);
             const auto* index{WITH_LOCK(::cs_main, return chainman.m_blockman.LookupBlockIndex(block->GetHash()))};
             Assert(index);
@@ -103,14 +105,14 @@ void utxo_snapshot_fuzz(FuzzBufferType buffer)
 {
     SeedRandomStateForTest(SeedRand::ZEROS);
     FuzzedDataProvider fuzzed_data_provider(buffer.data(), buffer.size());
-    SetMockTime(ConsumeTime(fuzzed_data_provider, /*min=*/1296688602)); // regtest genesis block timestamp
+    FakeNodeClock node_clock{ConsumeTime(fuzzed_data_provider, /*min=*/1296688602)}; // regtest genesis block timestamp
     auto& setup{*g_setup};
     bool dirty_chainman{false}; // Reuse the global chainman, but reset it when it is dirty
     auto& chainman{*setup.m_node.chainman};
 
     const auto snapshot_path = gArgs.GetDataDirNet() / "fuzzed_snapshot.dat";
 
-    Assert(!chainman.SnapshotBlockhash());
+    Assert(!chainman.ActiveChainstate().m_from_snapshot_blockhash);
 
     {
         AutoFile outfile{fsbridge::fopen(snapshot_path, "wb")};
@@ -137,7 +139,7 @@ void utxo_snapshot_fuzz(FuzzBufferType buffer)
                 outfile << coinbase->GetHash();
                 WriteCompactSize(outfile, 1); // number of coins for the hash
                 WriteCompactSize(outfile, 0); // index of coin
-                outfile << Coin(coinbase->vout[0], height, /*fCoinBaseIn=*/1);
+                outfile << Coin(coinbase->vout[0], height, /*fCoinBaseIn=*/true);
                 height++;
             }
         }
@@ -149,7 +151,7 @@ void utxo_snapshot_fuzz(FuzzBufferType buffer)
             outfile << coinbase->GetHash();
             WriteCompactSize(outfile, 1);   // number of coins for the hash
             WriteCompactSize(outfile, 999); // index of coin
-            outfile << Coin{coinbase->vout[0], /*nHeightIn=*/999, /*fCoinBaseIn=*/0};
+            outfile << Coin{coinbase->vout[0], /*nHeightIn=*/999, /*fCoinBaseIn=*/false};
         }
         assert(outfile.fclose() == 0);
     }
@@ -171,7 +173,7 @@ void utxo_snapshot_fuzz(FuzzBufferType buffer)
         if constexpr (!INVALID) {
             for (const auto& block : *g_chain) {
                 BlockValidationState dummy;
-                bool processed{chainman.ProcessNewBlockHeaders({{block->GetBlockHeader()}}, true, dummy)};
+                bool processed{chainman.ProcessNewBlockHeaders({{*block}}, true, dummy)};
                 Assert(processed);
                 const auto* index{WITH_LOCK(::cs_main, return chainman.m_blockman.LookupBlockIndex(block->GetHash()))};
                 Assert(index);
@@ -183,15 +185,13 @@ void utxo_snapshot_fuzz(FuzzBufferType buffer)
     if (ActivateFuzzedSnapshot()) {
         LOCK(::cs_main);
         Assert(!chainman.ActiveChainstate().m_from_snapshot_blockhash->IsNull());
-        Assert(*chainman.ActiveChainstate().m_from_snapshot_blockhash ==
-               *chainman.SnapshotBlockhash());
         const auto& coinscache{chainman.ActiveChainstate().CoinsTip()};
         for (const auto& block : *g_chain) {
             Assert(coinscache.HaveCoin(COutPoint{block->vtx.at(0)->GetHash(), 0}));
             const auto* index{chainman.m_blockman.LookupBlockIndex(block->GetHash())};
             Assert(index);
             Assert(index->nTx == 0);
-            if (index->nHeight == chainman.GetSnapshotBaseHeight()) {
+            if (index->nHeight == chainman.ActiveChainstate().SnapshotBase()->nHeight) {
                 auto params{chainman.GetParams().AssumeutxoForHeight(index->nHeight)};
                 Assert(params.has_value());
                 Assert(params.value().m_chain_tx_count == index->m_chain_tx_count);
@@ -202,7 +202,6 @@ void utxo_snapshot_fuzz(FuzzBufferType buffer)
         Assert(g_chain->size() == coinscache.GetCacheSize());
         dirty_chainman = true;
     } else {
-        Assert(!chainman.SnapshotBlockhash());
         Assert(!chainman.ActiveChainstate().m_from_snapshot_blockhash);
     }
     // Snapshot should refuse to load a second time regardless of validity
@@ -213,9 +212,11 @@ void utxo_snapshot_fuzz(FuzzBufferType buffer)
         Assert(!dirty_chainman);
     }
     if (dirty_chainman) {
+        setup.m_node.block_template_manager.reset();
         setup.m_node.chainman.reset();
         setup.m_make_chainman();
         setup.LoadVerifyActivateChainstate();
+        setup.CreateBlockTemplateManager();
     }
 }
 

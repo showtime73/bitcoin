@@ -1,8 +1,13 @@
 // Copyright (c) 2010 Satoshi Nakamoto
-// Copyright (c) 2009-2022 The Bitcoin Core developers
+// Copyright (c) 2009-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <rpc/register.h> // IWYU pragma: associated
+
+#include <addresstype.h>
+#include <crypto/hex_base.h>
+#include <key.h>
 #include <key_io.h>
 #include <outputtype.h>
 #include <pubkey.h>
@@ -16,18 +21,23 @@
 #include <tinyformat.h>
 #include <univalue.h>
 #include <util/check.h>
-#include <util/strencodings.h>
 
+#include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <tuple>
+#include <utility>
+#include <variant>
 #include <vector>
 
-static RPCHelpMan validateaddress()
+static RPCMethod validateaddress()
 {
-    return RPCHelpMan{
+    return RPCMethod{
         "validateaddress",
         "Return information about the given bitcoin address.\n",
         {
@@ -54,7 +64,7 @@ static RPCHelpMan validateaddress()
             HelpExampleCli("validateaddress", "\"" + EXAMPLE_ADDRESS[0] + "\"") +
             HelpExampleRpc("validateaddress", "\"" + EXAMPLE_ADDRESS[0] + "\"")
         },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
         {
             std::string error_msg;
             std::vector<int> error_locations;
@@ -85,9 +95,9 @@ static RPCHelpMan validateaddress()
     };
 }
 
-static RPCHelpMan createmultisig()
+static RPCMethod createmultisig()
 {
-    return RPCHelpMan{
+    return RPCMethod{
         "createmultisig",
         "Creates a multi-signature address with n signatures of m keys required.\n"
         "It returns a json object with the address and redeemScript.\n",
@@ -117,7 +127,7 @@ static RPCHelpMan createmultisig()
             "\nAs a JSON-RPC call\n"
             + HelpExampleRpc("createmultisig", "2, [\"03789ed0bb717d88f7d321a368d905e7430207ebbd82bd342cf11ae157a7ace5fd\",\"03dbc6764b8884a92e871274b87583e6d5c2a58819473e17e107ef3f6aa5a61626\"]")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
         {
             int required = request.params[0].getInt<int>();
 
@@ -130,20 +140,17 @@ static RPCHelpMan createmultisig()
             }
 
             // Get the output type
-            OutputType output_type = OutputType::LEGACY;
-            if (!request.params[2].isNull()) {
-                std::optional<OutputType> parsed = ParseOutputType(request.params[2].get_str());
-                if (!parsed) {
-                    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, strprintf("Unknown address type '%s'", request.params[2].get_str()));
-                } else if (parsed.value() == OutputType::BECH32M) {
-                    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "createmultisig cannot create bech32m multisig addresses");
-                }
-                output_type = parsed.value();
+            auto address_type{self.Arg<std::string_view>("address_type")};
+            auto output_type{ParseOutputType(address_type)};
+            if (!output_type) {
+                throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, tfm::format("Unknown address type '%s'", address_type));
+            } else if (output_type.value() == OutputType::BECH32M) {
+                throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "createmultisig cannot create bech32m multisig addresses");
             }
 
             FlatSigningProvider keystore;
             CScript inner;
-            const CTxDestination dest = AddAndGetMultisigDestination(required, pubkeys, output_type, keystore, inner);
+            const CTxDestination dest = AddAndGetMultisigDestination(required, pubkeys, output_type.value(), keystore, inner);
 
             // Make the descriptor
             std::unique_ptr<Descriptor> descriptor = InferDescriptor(GetScriptForDestination(dest), keystore);
@@ -154,7 +161,7 @@ static RPCHelpMan createmultisig()
             result.pushKV("descriptor", descriptor->ToString());
 
             UniValue warnings(UniValue::VARR);
-            if (descriptor->GetOutputType() != output_type) {
+            if (descriptor->GetOutputType() != output_type.value()) {
                 // Only warns if the user has explicitly chosen an address type we cannot generate
                 warnings.push_back("Unable to make chosen address type, please ensure no uncompressed public keys are present.");
             }
@@ -165,11 +172,11 @@ static RPCHelpMan createmultisig()
     };
 }
 
-static RPCHelpMan getdescriptorinfo()
+static RPCMethod getdescriptorinfo()
 {
     const std::string EXAMPLE_DESCRIPTOR = "wpkh([d34db33f/84h/0h/0h]0279be667ef9dcbbac55a06295Ce870b07029Bfcdb2dce28d959f2815b16f81798)";
 
-    return RPCHelpMan{
+    return RPCMethod{
         "getdescriptorinfo",
         "Analyses a descriptor.\n",
         {
@@ -178,7 +185,7 @@ static RPCHelpMan getdescriptorinfo()
         RPCResult{
             RPCResult::Type::OBJ, "", "",
             {
-                {RPCResult::Type::STR, "descriptor", "The descriptor in canonical form, without private keys. For a multipath descriptor, only the first will be returned."},
+                {RPCResult::Type::STR, "descriptor", "The descriptor, without private keys. For a multipath descriptor, only the first will be returned."},
                 {RPCResult::Type::ARR, "multipath_expansion", /*optional=*/true, "All descriptors produced by expanding multipath derivation elements. Only if the provided descriptor specifies multipath derivation elements.",
                 {
                     {RPCResult::Type::STR, "", ""},
@@ -194,11 +201,11 @@ static RPCHelpMan getdescriptorinfo()
             HelpExampleCli("getdescriptorinfo", "\"" + EXAMPLE_DESCRIPTOR + "\"") +
             HelpExampleRpc("getdescriptorinfo", "\"" + EXAMPLE_DESCRIPTOR + "\"")
         },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
         {
             FlatSigningProvider provider;
             std::string error;
-            auto descs = Parse(request.params[0].get_str(), provider, error);
+            auto descs = Parse(self.Arg<std::string_view>("descriptor"), provider, error);
             if (descs.empty()) {
                 throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, error);
             }
@@ -257,11 +264,11 @@ static UniValue DeriveAddresses(const Descriptor* desc, int64_t range_begin, int
     return addresses;
 }
 
-static RPCHelpMan deriveaddresses()
+static RPCMethod deriveaddresses()
 {
     const std::string EXAMPLE_DESCRIPTOR = "wpkh([d34db33f/84h/0h/0h]xpub6DJ2dNUysrn5Vt36jH2KLBT2i1auw1tTSSomg8PhqNiUtx8QX2SvC9nrHu81fT41fvDUnhMjEzQgXnQjKEu3oaqMSzhSrHMxyyoEAmUHQbY/0/*)#cjjspncu";
 
-    return RPCHelpMan{
+    return RPCMethod{
         "deriveaddresses",
         "Derives one or more addresses corresponding to an output descriptor.\n"
          "Examples of output descriptors are:\n"
@@ -301,15 +308,16 @@ static RPCHelpMan deriveaddresses()
             HelpExampleCli("deriveaddresses", "\"" + EXAMPLE_DESCRIPTOR + "\" \"[0,2]\"") +
             HelpExampleRpc("deriveaddresses", "\"" + EXAMPLE_DESCRIPTOR + "\", \"[0,2]\"")
         },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
         {
-            const std::string desc_str = request.params[0].get_str();
+            auto desc_str{self.Arg<std::string_view>("descriptor")};
 
             int64_t range_begin = 0;
             int64_t range_end = 0;
 
-            if (request.params.size() >= 2 && !request.params[1].isNull()) {
-                std::tie(range_begin, range_end) = ParseDescriptorRange(request.params[1]);
+            const UniValue* range = self.MaybeArg<UniValue>("range");
+            if (range) {
+                std::tie(range_begin, range_end) = ParseDescriptorRange(*range);
             }
 
             FlatSigningProvider key_provider;
@@ -319,11 +327,11 @@ static RPCHelpMan deriveaddresses()
                 throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, error);
             }
             auto& desc = descs.at(0);
-            if (!desc->IsRange() && request.params.size() > 1) {
+            if (!desc->IsRange() && range) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, "Range should not be specified for an un-ranged descriptor");
             }
 
-            if (desc->IsRange() && request.params.size() == 1) {
+            if (desc->IsRange() && !range) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, "Range must be specified for a ranged descriptor");
             }
 

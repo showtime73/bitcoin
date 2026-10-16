@@ -1,14 +1,15 @@
-// Copyright (c) 2015-2020 The Bitcoin Core developers
+// Copyright (c) 2015-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <consensus/merkle.h>
+#include <test/util/common.h>
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
 
-BOOST_FIXTURE_TEST_SUITE(merkle_tests, TestingSetup)
+BOOST_FIXTURE_TEST_SUITE(merkle_tests, BasicTestingSetup)
 
 static uint256 ComputeMerkleRootFromBranch(const uint256& leaf, const std::vector<uint256>& vMerkleBranch, uint32_t nIndex) {
     uint256 hash = leaf;
@@ -29,7 +30,7 @@ static uint256 BlockBuildMerkleTree(const CBlock& block, bool* fMutated, std::ve
     vMerkleTree.clear();
     vMerkleTree.reserve(block.vtx.size() * 2 + 16); // Safe upper bound for the number of total nodes.
     for (std::vector<CTransactionRef>::const_iterator it(block.vtx.begin()); it != block.vtx.end(); ++it)
-        vMerkleTree.push_back((*it)->GetHash());
+        vMerkleTree.push_back((*it)->GetHash().ToUint256());
     int j = 0;
     bool mutated = false;
     for (int nSize = block.vtx.size(); nSize > 1; nSize = (nSize + 1) / 2)
@@ -138,7 +139,7 @@ BOOST_AUTO_TEST_CASE(merkle_test)
                     std::vector<uint256> newBranch = TransactionMerklePath(block, mtx);
                     std::vector<uint256> oldBranch = BlockGetMerkleBranch(block, merkleTree, mtx);
                     BOOST_CHECK(oldBranch == newBranch);
-                    BOOST_CHECK(ComputeMerkleRootFromBranch(block.vtx[mtx]->GetHash(), newBranch, mtx) == oldRoot);
+                    BOOST_CHECK(ComputeMerkleRootFromBranch(block.vtx[mtx]->GetHash().ToUint256(), newBranch, mtx) == oldRoot);
                 }
             }
         }
@@ -154,6 +155,11 @@ BOOST_AUTO_TEST_CASE(merkle_test_empty_block)
 
     BOOST_CHECK_EQUAL(root.IsNull(), true);
     BOOST_CHECK_EQUAL(mutated, false);
+
+    // Verify TransactionMerklePath handles empty block correctly
+    // This tests the early-return path in MerkleComputation
+    std::vector<uint256> merkle_path = TransactionMerklePath(block, 0);
+    BOOST_CHECK(merkle_path.empty());
 }
 
 BOOST_AUTO_TEST_CASE(merkle_test_oneTx_block)
@@ -166,7 +172,7 @@ BOOST_AUTO_TEST_CASE(merkle_test_oneTx_block)
     mtx.nLockTime = 0;
     block.vtx[0] = MakeTransactionRef(std::move(mtx));
     uint256 root = BlockMerkleRoot(block, &mutated);
-    BOOST_CHECK_EQUAL(root, block.vtx[0]->GetHash());
+    BOOST_CHECK_EQUAL(root, block.vtx[0]->GetHash().ToUint256());
     BOOST_CHECK_EQUAL(mutated, false);
 }
 
@@ -192,6 +198,26 @@ BOOST_AUTO_TEST_CASE(merkle_test_OddTxWithRepeatedLastTx_block)
     uint256 rootofBlockWithRepeatedLastTx = BlockMerkleRoot(blockWithRepeatedLastTx, &mutated);
     BOOST_CHECK_EQUAL(rootofBlock, rootofBlockWithRepeatedLastTx);
     BOOST_CHECK_EQUAL(mutated, true);
+}
+
+BOOST_AUTO_TEST_CASE(merkle_test_mutated_return_value)
+{
+    // CVE-2012-2459 construction: [1,2,3,4,5,6] and [1,2,3,4,5,6,5,6] produce the same root.
+    const std::vector leaves{uint256{1}, uint256{2}, uint256{3}, uint256{4}, uint256{5}, uint256{6}};
+    auto mutated_leaves{leaves};
+    mutated_leaves.insert(mutated_leaves.end(), leaves.end() - 2, leaves.end()); // repeat last two elements
+
+    bool mutated{true};
+    const uint256 unmutated_root{ComputeMerkleRoot(leaves, &mutated)};
+    BOOST_CHECK(!mutated);
+    BOOST_CHECK_EQUAL(unmutated_root, ComputeMerkleRoot(mutated_leaves, &mutated));
+    BOOST_CHECK( mutated);
+
+    const std::vector nontrailing_duplicate_leaves{uint256{1}, uint256{1}, uint256{3}, uint256{4}};
+    mutated = false;
+    const uint256 nontrailing_duplicate_root{ComputeMerkleRoot(nontrailing_duplicate_leaves, &mutated)};
+    BOOST_CHECK(nontrailing_duplicate_root == ComputeMerkleRoot(nontrailing_duplicate_leaves));
+    BOOST_CHECK(mutated);
 }
 
 BOOST_AUTO_TEST_CASE(merkle_test_LeftSubtreeRightSubtree)
@@ -227,8 +253,9 @@ BOOST_AUTO_TEST_CASE(merkle_test_BlockWitness)
 {
     CBlock block;
 
-    block.vtx.resize(2);
-    for (std::size_t pos = 0; pos < block.vtx.size(); pos++) {
+    constexpr size_t vtx_count{3};
+    block.vtx.resize(vtx_count);
+    for (std::size_t pos = 0; pos < vtx_count; pos++) {
         CMutableTransaction mtx;
         mtx.nLockTime = pos;
         block.vtx[pos] = MakeTransactionRef(std::move(mtx));
@@ -237,12 +264,13 @@ BOOST_AUTO_TEST_CASE(merkle_test_BlockWitness)
     uint256 blockWitness = BlockWitnessMerkleRoot(block);
 
     std::vector<uint256> hashes;
-    hashes.resize(block.vtx.size());
-    hashes[0].SetNull();
-    hashes[1] = block.vtx[1]->GetHash();
+    hashes.resize(vtx_count); // Odd count exercises leaf duplication in ComputeMerkleRoot (which can append one extra hash).
+    hashes[0] = uint256::ZERO; // The witness hash of the coinbase is 0.
+    for (size_t pos{1}; pos < vtx_count; ++pos) {
+        hashes[pos] = block.vtx[pos]->GetWitnessHash().ToUint256();
+    }
 
     uint256 merkleRootofHashes = ComputeMerkleRoot(hashes);
-
     BOOST_CHECK_EQUAL(merkleRootofHashes, blockWitness);
 }
 BOOST_AUTO_TEST_SUITE_END()

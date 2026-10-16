@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2017-2019 The Bitcoin Core developers
+# Copyright (c) 2017-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """
@@ -11,15 +11,17 @@ from test_framework.util import (
     str_to_b64str,
 )
 import http.client
+import json
 import urllib.parse
 
 
-def rpccall(node, user, method):
+def rpccall(node, user, method, *, batch=False):
     url = urllib.parse.urlparse(node.url)
     headers = {"Authorization": "Basic " + str_to_b64str('{}:{}'.format(user[0], user[3]))}
-    conn = http.client.HTTPConnection(url.hostname, url.port)
+    request = {"method": method}
+    conn = http.client.HTTPConnection(url.hostname, url.port, timeout=node.rpc_timeout)
     conn.connect()
-    conn.request('POST', '/', '{"method": "' + method + '"}', headers)
+    conn.request('POST', '/', json.dumps([request] if batch else request), headers)
     resp = conn.getresponse()
     conn.close()
     return resp
@@ -30,10 +32,8 @@ def get_permissions(whitelist):
 
 
 class RPCWhitelistTest(BitcoinTestFramework):
-
     def set_test_params(self):
         self.num_nodes = 1
-        self.supports_cli = False
 
     def run_test(self):
         # 0 => Username
@@ -61,7 +61,7 @@ class RPCWhitelistTest(BitcoinTestFramework):
         ]
         # These commands shouldn't be allowed for any user to test failures
         self.never_allowed = ["getnetworkinfo"]
-        with open(self.nodes[0].datadir_path / "bitcoin.conf", "a", encoding="utf8") as f:
+        with open(self.nodes[0].datadir_path / "bitcoin.conf", "a") as f:
             f.write("\nrpcwhitelistdefault=0\n")
             for user in self.users:
                 f.write("rpcauth=" + user[0] + ":" + user[1] + "\n")
@@ -93,10 +93,11 @@ class RPCWhitelistTest(BitcoinTestFramework):
 
         self.test_users_permissions()
         self.test_rpcwhitelistdefault_permissions(0, 200)
+        self.test_rejected_method_logging()
 
         # Replace file configurations
         self.nodes[0].replace_in_config([("rpcwhitelistdefault=0", "rpcwhitelistdefault=1")])
-        with open(self.nodes[0].datadir_path / "bitcoin.conf", 'a', encoding='utf8') as f:
+        with open(self.nodes[0].datadir_path / "bitcoin.conf", 'a') as f:
             f.write("rpcwhitelist=__cookie__:getblockcount,getblockchaininfo,getmempoolinfo,stop\n")
         self.restart_node(0)
 
@@ -110,6 +111,16 @@ class RPCWhitelistTest(BitcoinTestFramework):
         self.restart_node(0)
         self.test_users_permissions()
         self.test_rpcwhitelistdefault_permissions(1, 403)
+
+    def test_rejected_method_logging(self):
+        """Test logging a method rejected by the RPC whitelist."""
+        self.log.info(f"[{self.users[0][0]}]: Testing rejected method logging")
+        forged_log_line = "ERROR: ConnectTip: ConnectBlock 0000000000000000deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef failed, bad-txns-inputs-missingorspent"
+        # Stripping special characters could make the log appear to reject a whitelisted method
+        for rejected_method in [f"getblock\n{forged_log_line}", 'getblock!"#$%&\'*+<=>[\\]^`{|}~']:
+            for batch in [False, True]:
+                with self.nodes[0].assert_debug_log([f"not allowed to call method {rejected_method}".replace("\n", "\\x0a")]):
+                    assert_equal(403, rpccall(self.nodes[0], self.users[0], rejected_method, batch=batch).status)
 
     def test_users_permissions(self):
         """

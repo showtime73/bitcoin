@@ -1,4 +1,4 @@
-// Copyright (c) 2011-2022 The Bitcoin Core developers
+// Copyright (c) 2011-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -58,7 +58,7 @@ BOOST_AUTO_TEST_CASE(base58_DecodeBase58)
         std::vector<unsigned char> expected = ParseHex(test[0].get_str());
         std::string base58string = test[1].get_str();
         BOOST_CHECK_MESSAGE(DecodeBase58(base58string, result, 256), strTest);
-        BOOST_CHECK_MESSAGE(result.size() == expected.size() && std::equal(result.begin(), result.end(), expected.begin()), strTest);
+        BOOST_CHECK_MESSAGE(std::ranges::equal(result ,expected), strTest);
     }
 
     BOOST_CHECK(!DecodeBase58("invalid"s, result, 100));

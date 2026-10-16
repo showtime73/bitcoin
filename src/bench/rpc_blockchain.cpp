@@ -1,25 +1,26 @@
-// Copyright (c) 2016-2022 The Bitcoin Core developers
+// Copyright (c) 2016-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <bench/bench.h>
 #include <bench/data/block413567.raw.h>
 #include <chain.h>
+#include <consensus/params.h>
 #include <core_io.h>
+#include <kernel/chainparams.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <rpc/blockchain.h>
 #include <serialize.h>
-#include <span.h>
 #include <streams.h>
 #include <test/util/setup_common.h>
 #include <uint256.h>
 #include <univalue.h>
 #include <validation.h>
 
-#include <cstddef>
 #include <memory>
-#include <vector>
+#include <span>
+#include <string>
 
 namespace {
 
@@ -31,10 +32,7 @@ struct TestBlockAndIndex {
 
     TestBlockAndIndex()
     {
-        DataStream stream{benchmark::data::block413567};
-        std::byte a{0};
-        stream.write({&a, 1}); // Prevent compaction
-
+        SpanReader stream{benchmark::data::block413567};
         stream >> TX_WITH_WITNESS(block);
 
         blockHash = block.GetHash();
@@ -70,9 +68,9 @@ static void BlockToJsonVerbosity3(benchmark::Bench& bench)
     BlockToJson(bench, TxVerbosity::SHOW_DETAILS_AND_PREVOUT);
 }
 
-BENCHMARK(BlockToJsonVerbosity1, benchmark::PriorityLevel::HIGH);
-BENCHMARK(BlockToJsonVerbosity2, benchmark::PriorityLevel::HIGH);
-BENCHMARK(BlockToJsonVerbosity3, benchmark::PriorityLevel::HIGH);
+BENCHMARK(BlockToJsonVerbosity1);
+BENCHMARK(BlockToJsonVerbosity2);
+BENCHMARK(BlockToJsonVerbosity3);
 
 static void BlockToJsonVerboseWrite(benchmark::Bench& bench)
 {
@@ -85,4 +83,4 @@ static void BlockToJsonVerboseWrite(benchmark::Bench& bench)
     });
 }
 
-BENCHMARK(BlockToJsonVerboseWrite, benchmark::PriorityLevel::HIGH);
+BENCHMARK(BlockToJsonVerboseWrite);

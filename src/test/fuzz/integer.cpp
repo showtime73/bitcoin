@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2022 The Bitcoin Core developers
+// Copyright (c) 2019-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -67,6 +67,7 @@ FUZZ_TARGET(integer, .init = initialize_integer)
     // ConsumeIntegral<char>() instead of casting from {u,}int8_t.
     const char ch = fuzzed_data_provider.ConsumeIntegral<char>();
     const bool b = fuzzed_data_provider.ConsumeBool();
+    const uint64_t u64_2{fuzzed_data_provider.ConsumeIntegral<uint64_t>()};
 
     const Consensus::Params& consensus_params = Params().GetConsensus();
     (void)CheckProofOfWorkImpl(u256, u32, consensus_params);
@@ -80,8 +81,8 @@ FUZZ_TARGET(integer, .init = initialize_integer)
     }
     constexpr uint256 u256_min{"0000000000000000000000000000000000000000000000000000000000000000"};
     constexpr uint256 u256_max{"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
-    const std::vector<uint256> v256{u256, u256_min, u256_max};
-    (void)ComputeMerkleRoot(v256);
+    std::vector v256{u256, u256_min, u256_max};
+    (void)ComputeMerkleRoot(std::move(v256));
     (void)DecompressAmount(u64);
     {
         if (std::optional<CAmount> parsed = ParseMoney(FormatMoney(i64))) {
@@ -118,8 +119,48 @@ FUZZ_TARGET(integer, .init = initialize_integer)
     }
     (void)MillisToTimeval(i64);
     (void)SighashToStr(uch);
-    (void)SipHashUint256(u64, u64, u256);
-    (void)SipHashUint256Extra(u64, u64, u256, u32);
+    {
+        CSipHasher hasher{u64, u64_2};
+        const PresaltedSipHasher presalted_hasher{u64, u64_2};
+        hasher.Write(u256);
+        assert(presalted_hasher(u256) == hasher.Finalize());
+        uint8_t extra[4]{};
+        WriteLE32(extra, u32);
+        hasher.Write(extra);
+        assert(presalted_hasher(u256, u32) == hasher.Finalize());
+    }
+    {
+        const uint64_t data0{u160.GetUint64(0)}, data1{u160.GetUint64(1)};
+        SipHasher13UJ hasher{u64, u64_2};
+        const SipHasher13UJ fixed_hasher{u64, u64_2};
+        hasher.WriteJumbo(u256);
+        assert(fixed_hasher.Hash(u256) == hasher.Finalize());
+        hasher.Write(data0);
+        assert(fixed_hasher.Hash(u256, data0) == hasher.Finalize());
+
+        SipHasher13UJ reference{u64, u64_2};
+        SipHasher13UJ mixed{u64, u64_2};
+        reference.WriteJumbo(u256);
+        mixed.WriteJumbo(u256);
+
+        const auto write_normal{[](SipHasher13UJ& hasher, uint64_t data, bool as_jumbo) {
+            if (as_jumbo) {
+                uint256 data256{};
+                WriteLE64(data256.data(), data);
+                hasher.WriteJumbo(data256);
+            } else {
+                hasher.Write(data);
+            }
+        }};
+
+        reference.Write(data0).Write(data1);
+        write_normal(mixed, data0, b);
+        write_normal(mixed, data1, u8 & 1);
+        assert(mixed.Finalize() == reference.Finalize());
+
+        reference.WriteJumbo(u256).Write(data0);
+        assert(mixed.Hash(u256, data0) == reference.Finalize());
+    }
     (void)ToLower(ch);
     (void)ToUpper(ch);
     {
@@ -236,10 +277,6 @@ FUZZ_TARGET(integer, .init = initialize_integer)
         const uint16_t deserialized_u16 = ser_readdata16(stream);
         assert(u16 == deserialized_u16 && stream.empty());
 
-        ser_writedata16be(stream, u16);
-        const uint16_t deserialized_u16be = ser_readdata16be(stream);
-        assert(u16 == deserialized_u16be && stream.empty());
-
         ser_writedata8(stream, u8);
         const uint8_t deserialized_u8 = ser_readdata8(stream);
         assert(u8 == deserialized_u8 && stream.empty());
@@ -254,10 +291,5 @@ FUZZ_TARGET(integer, .init = initialize_integer)
             assert(u64 == deserialized_u64 && stream.empty());
         } catch (const std::ios_base::failure&) {
         }
-    }
-
-    try {
-        CHECK_NONFATAL(b);
-    } catch (const NonFatalCheckError&) {
     }
 }

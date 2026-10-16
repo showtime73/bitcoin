@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2022 The Bitcoin Core developers
+// Copyright (c) 2018-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -6,6 +6,7 @@
 #include <bench/bench.h>
 #include <util/strencodings.h>
 
+#include <array>
 #include <vector>
 
 using namespace util::hex_literals;
@@ -31,5 +32,5 @@ static void Bech32Decode(benchmark::Bench& bench)
 }
 
 
-BENCHMARK(Bech32Encode, benchmark::PriorityLevel::HIGH);
-BENCHMARK(Bech32Decode, benchmark::PriorityLevel::HIGH);
+BENCHMARK(Bech32Encode);
+BENCHMARK(Bech32Decode);

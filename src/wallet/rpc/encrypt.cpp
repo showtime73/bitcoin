@@ -1,4 +1,4 @@
-// Copyright (c) 2011-2022 The Bitcoin Core developers
+// Copyright (c) 2011-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -6,13 +6,14 @@
 #include <scheduler.h>
 #include <wallet/context.h>
 #include <wallet/rpc/util.h>
+#include <wallet/scan.h>
 #include <wallet/wallet.h>
 
 
 namespace wallet {
-RPCHelpMan walletpassphrase()
+RPCMethod walletpassphrase()
 {
-    return RPCHelpMan{
+    return RPCMethod{
         "walletpassphrase",
         "Stores the wallet decryption key in memory for 'timeout' seconds.\n"
                 "This is needed prior to performing transactions related to private keys such as sending bitcoins\n"
@@ -32,7 +33,7 @@ RPCHelpMan walletpassphrase()
             "\nAs a JSON-RPC call\n"
             + HelpExampleRpc("walletpassphrase", "\"my pass phrase\", 60")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
     std::shared_ptr<CWallet> const wallet = GetWalletForJSONRPCRequest(request);
     if (!wallet) return UniValue::VNULL;
@@ -45,7 +46,7 @@ RPCHelpMan walletpassphrase()
     {
         LOCK(pwallet->cs_wallet);
 
-        if (!pwallet->IsCrypted()) {
+        if (!pwallet->HasEncryptionKeys()) {
             throw JSONRPCError(RPC_WALLET_WRONG_ENC_STATE, "Error: running with an unencrypted wallet, but walletpassphrase was called.");
         }
 
@@ -60,8 +61,8 @@ RPCHelpMan walletpassphrase()
         if (nSleepTime < 0) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Timeout cannot be negative.");
         }
-        // Clamp timeout
-        constexpr int64_t MAX_SLEEP_TIME = 100000000; // larger values trigger a macos/libevent bug?
+        // Clamp timeout to ~3 years to avoid overflow when computing the relock time
+        constexpr int64_t MAX_SLEEP_TIME = 100000000;
         if (nSleepTime > MAX_SLEEP_TIME) {
             nSleepTime = MAX_SLEEP_TIME;
         }
@@ -70,18 +71,8 @@ RPCHelpMan walletpassphrase()
             throw JSONRPCError(RPC_INVALID_PARAMETER, "passphrase cannot be empty");
         }
 
-        if (!pwallet->Unlock(strWalletPass)) {
-            // Check if the passphrase has a null character (see #27067 for details)
-            if (strWalletPass.find('\0') == std::string::npos) {
-                throw JSONRPCError(RPC_WALLET_PASSPHRASE_INCORRECT, "Error: The wallet passphrase entered was incorrect.");
-            } else {
-                throw JSONRPCError(RPC_WALLET_PASSPHRASE_INCORRECT, "Error: The wallet passphrase entered is incorrect. "
-                                                                    "It contains a null character (ie - a zero byte). "
-                                                                    "If the passphrase was set with a version of this software prior to 25.0, "
-                                                                    "please try again with only the characters up to — but not including — "
-                                                                    "the first null character. If this is successful, please set a new "
-                                                                    "passphrase to avoid this issue in the future.");
-            }
+        if (auto unlocked{pwallet->Unlock(strWalletPass)}; !unlocked) {
+            throw JSONRPCError(HandleWalletErrorCode(unlocked.error().code), unlocked.error().message.original);
         }
 
         pwallet->TopUpKeyPool();
@@ -115,9 +106,9 @@ RPCHelpMan walletpassphrase()
 }
 
 
-RPCHelpMan walletpassphrasechange()
+RPCMethod walletpassphrasechange()
 {
-    return RPCHelpMan{
+    return RPCMethod{
         "walletpassphrasechange",
         "Changes the wallet passphrase from 'oldpassphrase' to 'newpassphrase'.\n",
                 {
@@ -129,16 +120,16 @@ RPCHelpMan walletpassphrasechange()
                     HelpExampleCli("walletpassphrasechange", "\"old one\" \"new one\"")
             + HelpExampleRpc("walletpassphrasechange", "\"old one\", \"new one\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
     std::shared_ptr<CWallet> const pwallet = GetWalletForJSONRPCRequest(request);
     if (!pwallet) return UniValue::VNULL;
 
-    if (!pwallet->IsCrypted()) {
+    if (!pwallet->HasEncryptionKeys()) {
         throw JSONRPCError(RPC_WALLET_WRONG_ENC_STATE, "Error: running with an unencrypted wallet, but walletpassphrasechange was called.");
     }
 
-    if (pwallet->IsScanningWithPassphrase()) {
+    if (pwallet->Scanner().IsScanningWithPassphrase()) {
         throw JSONRPCError(RPC_WALLET_ERROR, "Error: the wallet is currently being used to rescan the blockchain for related transactions. Please call `abortrescan` before changing the passphrase.");
     }
 
@@ -156,17 +147,8 @@ RPCHelpMan walletpassphrasechange()
         throw JSONRPCError(RPC_INVALID_PARAMETER, "passphrase cannot be empty");
     }
 
-    if (!pwallet->ChangeWalletPassphrase(strOldWalletPass, strNewWalletPass)) {
-        // Check if the old passphrase had a null character (see #27067 for details)
-        if (strOldWalletPass.find('\0') == std::string::npos) {
-            throw JSONRPCError(RPC_WALLET_PASSPHRASE_INCORRECT, "Error: The wallet passphrase entered was incorrect.");
-        } else {
-            throw JSONRPCError(RPC_WALLET_PASSPHRASE_INCORRECT, "Error: The old wallet passphrase entered is incorrect. "
-                                                                "It contains a null character (ie - a zero byte). "
-                                                                "If the old passphrase was set with a version of this software prior to 25.0, "
-                                                                "please try again with only the characters up to — but not including — "
-                                                                "the first null character.");
-        }
+    if (auto changed{pwallet->ChangeWalletPassphrase(strOldWalletPass, strNewWalletPass)}; !changed) {
+        throw JSONRPCError(HandleWalletErrorCode(changed.error().code), changed.error().message.original);
     }
 
     return UniValue::VNULL;
@@ -175,9 +157,9 @@ RPCHelpMan walletpassphrasechange()
 }
 
 
-RPCHelpMan walletlock()
+RPCMethod walletlock()
 {
-    return RPCHelpMan{
+    return RPCMethod{
         "walletlock",
         "Removes the wallet encryption key from memory, locking the wallet.\n"
                 "After calling this method, you will need to call walletpassphrase again\n"
@@ -194,16 +176,16 @@ RPCHelpMan walletlock()
             "\nAs a JSON-RPC call\n"
             + HelpExampleRpc("walletlock", "")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
     std::shared_ptr<CWallet> const pwallet = GetWalletForJSONRPCRequest(request);
     if (!pwallet) return UniValue::VNULL;
 
-    if (!pwallet->IsCrypted()) {
+    if (!pwallet->HasEncryptionKeys()) {
         throw JSONRPCError(RPC_WALLET_WRONG_ENC_STATE, "Error: running with an unencrypted wallet, but walletlock was called.");
     }
 
-    if (pwallet->IsScanningWithPassphrase()) {
+    if (pwallet->Scanner().IsScanningWithPassphrase()) {
         throw JSONRPCError(RPC_WALLET_ERROR, "Error: the wallet is currently being used to rescan the blockchain for related transactions. Please call `abortrescan` before locking the wallet.");
     }
 
@@ -218,9 +200,9 @@ RPCHelpMan walletlock()
 }
 
 
-RPCHelpMan encryptwallet()
+RPCMethod encryptwallet()
 {
-    return RPCHelpMan{
+    return RPCMethod{
         "encryptwallet",
         "Encrypts the wallet with 'passphrase'. This is for first time encryption.\n"
         "After this, any calls that interact with private keys such as sending or signing \n"
@@ -247,7 +229,7 @@ RPCHelpMan encryptwallet()
             "\nAs a JSON-RPC call\n"
             + HelpExampleRpc("encryptwallet", "\"my pass phrase\"")
                 },
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+        [](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
     std::shared_ptr<CWallet> const pwallet = GetWalletForJSONRPCRequest(request);
     if (!pwallet) return UniValue::VNULL;
@@ -256,11 +238,11 @@ RPCHelpMan encryptwallet()
         throw JSONRPCError(RPC_WALLET_ENCRYPTION_FAILED, "Error: wallet does not contain private keys, nothing to encrypt.");
     }
 
-    if (pwallet->IsCrypted()) {
+    if (pwallet->HasEncryptionKeys()) {
         throw JSONRPCError(RPC_WALLET_WRONG_ENC_STATE, "Error: running with an encrypted wallet, but encryptwallet was called.");
     }
 
-    if (pwallet->IsScanningWithPassphrase()) {
+    if (pwallet->Scanner().IsScanningWithPassphrase()) {
         throw JSONRPCError(RPC_WALLET_ERROR, "Error: the wallet is currently being used to rescan the blockchain for related transactions. Please call `abortrescan` before encrypting the wallet.");
     }
 

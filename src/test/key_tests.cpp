@@ -9,6 +9,7 @@
 #include <span.h>
 #include <streams.h>
 #include <secp256k1_extrakeys.h>
+#include <test/util/common.h>
 #include <test/util/random.h>
 #include <test/util/setup_common.h>
 #include <uint256.h>
@@ -40,13 +41,17 @@ BOOST_FIXTURE_TEST_SUITE(key_tests, BasicTestingSetup)
 BOOST_AUTO_TEST_CASE(key_test1)
 {
     CKey key1  = DecodeSecret(strSecret1);
-    BOOST_CHECK(key1.IsValid() && !key1.IsCompressed());
+    BOOST_CHECK(key1.IsValid());
+    BOOST_CHECK(!key1.IsCompressed());
     CKey key2  = DecodeSecret(strSecret2);
-    BOOST_CHECK(key2.IsValid() && !key2.IsCompressed());
+    BOOST_CHECK(key2.IsValid());
+    BOOST_CHECK(!key2.IsCompressed());
     CKey key1C = DecodeSecret(strSecret1C);
-    BOOST_CHECK(key1C.IsValid() && key1C.IsCompressed());
+    BOOST_CHECK(key1C.IsValid());
+    BOOST_CHECK(key1C.IsCompressed());
     CKey key2C = DecodeSecret(strSecret2C);
-    BOOST_CHECK(key2C.IsValid() && key2C.IsCompressed());
+    BOOST_CHECK(key2C.IsValid());
+    BOOST_CHECK(key2C.IsCompressed());
     CKey bad_key = DecodeSecret(strAddressBad);
     BOOST_CHECK(!bad_key.IsValid());
 
@@ -376,9 +381,9 @@ BOOST_AUTO_TEST_CASE(key_schnorr_tweak_smoke_test)
     secp256k1_keypair keypair;
     BOOST_CHECK(secp256k1_keypair_create(secp256k1_context_sign, &keypair, UCharCast(key.begin())));
     secp256k1_xonly_pubkey xonly_pubkey;
-    BOOST_CHECK(secp256k1_keypair_xonly_pub(secp256k1_context_sign, &xonly_pubkey, nullptr, &keypair));
+    BOOST_CHECK(secp256k1_keypair_xonly_pub(secp256k1_context_static, &xonly_pubkey, nullptr, &keypair));
     unsigned char xonly_bytes[32];
-    BOOST_CHECK(secp256k1_xonly_pubkey_serialize(secp256k1_context_sign, xonly_bytes, &xonly_pubkey));
+    BOOST_CHECK(secp256k1_xonly_pubkey_serialize(secp256k1_context_static, xonly_bytes, &xonly_pubkey));
     uint256 tweak_old = XOnlyPubKey(xonly_bytes).ComputeTapTweakHash(&merkle_root);
 
     // CPubKey

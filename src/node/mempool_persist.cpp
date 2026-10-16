@@ -1,4 +1,4 @@
-// Copyright (c) 2022 The Bitcoin Core developers
+// Copyright (c) 2022-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -6,7 +6,6 @@
 
 #include <clientversion.h>
 #include <consensus/amount.h>
-#include <logging.h>
 #include <primitives/transaction.h>
 #include <random.h>
 #include <serialize.h>
@@ -16,6 +15,7 @@
 #include <uint256.h>
 #include <util/fs.h>
 #include <util/fs_helpers.h>
+#include <util/log.h>
 #include <util/obfuscation.h>
 #include <util/signalinterrupt.h>
 #include <util/syserror.h>
@@ -122,7 +122,7 @@ bool LoadMempool(CTxMemPool& pool, const fs::path& load_path, Chainstate& active
             if (active_chainstate.m_chainman.m_interrupt)
                 return false;
         }
-        std::map<uint256, CAmount> mapDeltas;
+        std::map<Txid, CAmount> mapDeltas;
         file >> mapDeltas;
 
         if (opts.apply_fee_delta_priority) {
@@ -131,7 +131,7 @@ bool LoadMempool(CTxMemPool& pool, const fs::path& load_path, Chainstate& active
             }
         }
 
-        std::set<uint256> unbroadcast_txids;
+        std::set<Txid> unbroadcast_txids;
         file >> unbroadcast_txids;
         if (opts.apply_unbroadcast_set) {
             unbroadcast = unbroadcast_txids.size();
@@ -154,9 +154,9 @@ bool DumpMempool(const CTxMemPool& pool, const fs::path& dump_path, FopenFn mock
 {
     auto start = SteadyClock::now();
 
-    std::map<uint256, CAmount> mapDeltas;
+    std::map<Txid, CAmount> mapDeltas;
     std::vector<TxMempoolInfo> vinfo;
-    std::set<uint256> unbroadcast_txids;
+    std::set<Txid> unbroadcast_txids;
 
     static Mutex dump_mutex;
     LOCK(dump_mutex);
@@ -179,16 +179,11 @@ bool DumpMempool(const CTxMemPool& pool, const fs::path& dump_path, FopenFn mock
     }
 
     try {
-        const uint64_t version{pool.m_opts.persist_v1_dat ? MEMPOOL_DUMP_VERSION_NO_XOR_KEY : MEMPOOL_DUMP_VERSION};
-        file << version;
+        file << MEMPOOL_DUMP_VERSION;
 
-        if (!pool.m_opts.persist_v1_dat) {
-            const Obfuscation obfuscation{FastRandomContext{}.randbytes<Obfuscation::KEY_SIZE>()};
-            file << obfuscation;
-            file.SetObfuscation(obfuscation);
-        } else {
-            file.SetObfuscation({});
-        }
+        const Obfuscation obfuscation{FastRandomContext{}.randbytes<Obfuscation::KEY_SIZE>()};
+        file << obfuscation;
+        file.SetObfuscation(obfuscation);
 
         uint64_t mempool_transactions_to_write(vinfo.size());
         file << mempool_transactions_to_write;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2014-2022 The Bitcoin Core developers
+# Copyright (c) 2014-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test spending coinbase transactions.
@@ -32,7 +32,8 @@ class MempoolSpendCoinbaseTest(BitcoinTestFramework):
         # Coinbase at height chain_height-100+1 ok in mempool, should
         # get mined. Coinbase at height chain_height-100+2 is
         # too immature to spend.
-        coinbase_txid = lambda h: self.nodes[0].getblock(self.nodes[0].getblockhash(h))['tx'][0]
+        def coinbase_txid(h):
+            return self.nodes[0].getblock(self.nodes[0].getblockhash(h))['tx'][0]
         utxo_mature = wallet.get_utxo(txid=coinbase_txid(chain_height - 100 + 1))
         utxo_immature = wallet.get_utxo(txid=coinbase_txid(chain_height - 100 + 2))
 

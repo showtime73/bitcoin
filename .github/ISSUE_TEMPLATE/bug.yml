@@ -10,6 +10,7 @@ body:
         * General bitcoin questions and/or support requests should use Bitcoin StackExchange at https://bitcoin.stackexchange.com.
         * For reporting security issues, please read instructions at https://bitcoincore.org/en/contact/.
         * If the node is "stuck" during sync or giving "block checksum mismatch" errors, please ensure your hardware is stable by running `memtest` and observe CPU temperature with a load-test tool such as `linpack` before creating an issue.
+        * If you use AI tools when opening this issue, please read the [AI policy](https://github.com/bitcoin/bitcoin/blob/master/doc/AI_POLICY.md).
 
         ----
   - type: checkboxes
@@ -78,7 +79,7 @@ body:
     id: os
     attributes:
       label: Operating system and version
-      placeholder: e.g. "MacOS Ventura 13.2" or "Ubuntu 22.04 LTS"
+      placeholder: e.g. "MacOS 26.0" or "Ubuntu 26.04 LTS"
     validations:
       required: true
   - type: textarea
@@ -90,4 +91,3 @@ body:
         e.g. OS/CPU and disk type, network connectivity
     validations:
       required: false
-

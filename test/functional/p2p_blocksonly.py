@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# Copyright (c) 2019-2022 The Bitcoin Core developers
+# Copyright (c) 2019-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test p2p blocksonly mode & block-relay-only connections."""
 
 import time
 
-from test_framework.messages import msg_tx, msg_inv, CInv, MSG_WTX
+from test_framework.messages import msg_getdata, msg_tx, msg_inv, CInv, MSG_WTX
 from test_framework.p2p import P2PInterface, P2PTxInvStore
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
@@ -92,6 +92,16 @@ class P2PBlocksOnly(BitcoinTestFramework):
         conn = self.nodes[0].add_outbound_p2p_connection(P2PInterface(), p2p_idx=0, connection_type="block-relay-only")
         assert_equal(self.nodes[0].getpeerinfo()[0]['relaytxes'], False)
         self.check_p2p_inv_violation(conn)
+
+        self.log.info(
+            "Check that getdata(tx) from a block-relay-only connection is ignored"
+        )
+        conn = self.nodes[0].add_outbound_p2p_connection(
+            P2PInterface(), p2p_idx=0, connection_type="block-relay-only"
+        )
+        conn.send_and_ping(msg_getdata([CInv(t=MSG_WTX, h=0x12345)]))
+        assert_equal(self.nodes[0].getpeerinfo()[0]["relaytxes"], False)
+        assert "notfound" not in conn.last_message
 
         self.log.info("Check that txs from RPC are not sent to blockrelay connection")
         conn = self.nodes[0].add_outbound_p2p_connection(P2PTxInvStore(), p2p_idx=1, connection_type="block-relay-only")

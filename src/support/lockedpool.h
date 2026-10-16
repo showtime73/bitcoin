@@ -1,4 +1,4 @@
-// Copyright (c) 2016-2020 The Bitcoin Core developers
+// Copyright (c) 2016-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -131,11 +131,11 @@ public:
      * allocation and deallocation overhead. Setting it too high allocates
      * more locked memory from the OS than strictly necessary.
      */
-    static const size_t ARENA_SIZE = 256*1024;
+    static constexpr size_t ARENA_SIZE{256*1024};
     /** Chunk alignment. Another compromise. Setting this too high will waste
      * memory, setting it too low will facilitate fragmentation.
      */
-    static const size_t ARENA_ALIGN = 16;
+    static constexpr size_t ARENA_ALIGN{16};
 
     /** Callback when allocation succeeds but locking fails.
      */
@@ -219,12 +219,7 @@ class LockedPoolManager : public LockedPool
 {
 public:
     /** Return the current instance, or create it once */
-    static LockedPoolManager& Instance()
-    {
-        static std::once_flag init_flag;
-        std::call_once(init_flag, LockedPoolManager::CreateInstance);
-        return *LockedPoolManager::_instance;
-    }
+    static LockedPoolManager& Instance();
 
 private:
     explicit LockedPoolManager(std::unique_ptr<LockedPageAllocator> allocator);

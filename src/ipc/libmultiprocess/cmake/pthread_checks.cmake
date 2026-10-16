@@ -1,4 +1,4 @@
-# Copyright (c) 2024 The Bitcoin Core developers
+# Copyright (c) The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -25,7 +25,7 @@ check_cxx_source_compiles("
   int main(int argc, char** argv)
   {
     uint64_t tid;
-    pthread_threadid_np(NULL, &tid);
+    pthread_threadid_np(nullptr, &tid);
     return 0;
   }"
   HAVE_PTHREAD_THREADID_NP)

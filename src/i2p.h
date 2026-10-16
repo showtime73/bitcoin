@@ -1,4 +1,4 @@
-// Copyright (c) 2020-2022 The Bitcoin Core developers
+// Copyright (c) 2020-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -48,7 +48,7 @@ namespace sam {
  * The longest known message is ~1400 bytes, so this is high enough not to be triggered during
  * normal operation, yet low enough to avoid a malicious proxy from filling our memory.
  */
-static constexpr size_t MAX_MSG_SIZE{65536};
+inline constexpr size_t MAX_MSG_SIZE{65'536};
 
 /**
  * I2P SAM session.
@@ -63,13 +63,11 @@ public:
      * private key will be generated and saved into the file.
      * @param[in] control_host Location of the SAM proxy.
      * @param[in,out] interrupt If this is signaled then all operations are canceled as soon as
-     * possible and executing methods throw an exception. Notice: only a pointer to the
-     * `CThreadInterrupt` object is saved, so it must not be destroyed earlier than this
-     * `Session` object.
+     * possible and executing methods throw an exception.
      */
     Session(const fs::path& private_key_file,
             const Proxy& control_host,
-            CThreadInterrupt* interrupt);
+            std::shared_ptr<CThreadInterrupt> interrupt);
 
     /**
      * Construct a transient session which will generate its own I2P private key
@@ -78,11 +76,9 @@ public:
      * the session will be lazily created later when first used.
      * @param[in] control_host Location of the SAM proxy.
      * @param[in,out] interrupt If this is signaled then all operations are canceled as soon as
-     * possible and executing methods throw an exception. Notice: only a pointer to the
-     * `CThreadInterrupt` object is saved, so it must not be destroyed earlier than this
-     * `Session` object.
+     * possible and executing methods throw an exception.
      */
-    Session(const Proxy& control_host, CThreadInterrupt* interrupt);
+    Session(const Proxy& control_host, std::shared_ptr<CThreadInterrupt> interrupt);
 
     /**
      * Destroy the session, closing the internally used sockets. The sockets that have been
@@ -197,7 +193,7 @@ private:
 
     /**
      * Derive own destination from `m_private_key`.
-     * @see https://geti2p.net/spec/common-structures#destination
+     * @see https://i2p.net/en/docs/specs/common-structures/#destination
      * @return an I2P destination
      */
     Binary MyDestination() const EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
@@ -235,7 +231,7 @@ private:
     /**
      * Cease network activity when this is signaled.
      */
-    CThreadInterrupt* const m_interrupt;
+    const std::shared_ptr<CThreadInterrupt> m_interrupt;
 
     /**
      * Mutex protecting the members that can be concurrently accessed.
@@ -244,7 +240,7 @@ private:
 
     /**
      * The private key of this peer.
-     * @see The reply to the "DEST GENERATE" command in https://geti2p.net/en/docs/api/samv3
+     * @see The reply to the "DEST GENERATE" command in https://i2p.net/en/docs/api/samv3
      */
     Binary m_private_key GUARDED_BY(m_mutex);
 
@@ -255,7 +251,7 @@ private:
      * other connections to the SAM service to accept incoming I2P
      * connections and make outgoing ones.
      * If not connected then this unique_ptr will be empty.
-     * See https://geti2p.net/en/docs/api/samv3
+     * See https://i2p.net/en/docs/api/samv3
      */
     std::unique_ptr<Sock> m_control_sock GUARDED_BY(m_mutex);
 

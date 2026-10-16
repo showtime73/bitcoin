@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-export LC_ALL=C
-set -e -o pipefail
+# Copyright (c) The Bitcoin Core developers
+# Distributed under the MIT software license, see the accompanying
+# file COPYING or https://opensource.org/license/mit.
+export LC_ALL=C.UTF-8
+set -o errexit -o pipefail
 
 # Source the common prelude, which:
 #   1. Checks if we're at the top directory of the Bitcoin Core repository
@@ -9,6 +12,14 @@ set -e -o pipefail
 # shellcheck source=libexec/prelude.bash
 source "$(dirname "${BASH_SOURCE[0]}")/libexec/prelude.bash"
 
+# Parse supported args
+FORCE=0
+if [[ $* == "--force" ]]; then
+    FORCE=1
+elif [ $# != 0 ]; then
+    echo "Script only takes optional --force arg."
+    exit 1
+fi
 
 ###################
 ## Sanity Checks ##
@@ -79,5 +90,15 @@ for precious_dirs_file in "${found_precious_dirs_files[@]}"; do
         fi
     done < "$precious_dirs_file"
 done
+
+if [[ $FORCE == 0 ]]; then
+    git clean -nxdff "${exclude_flags[@]}"
+
+    read -p "Proceed? (y/n) " -r
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Aborted."
+        exit 1
+    fi
+fi
 
 git clean -xdff "${exclude_flags[@]}"

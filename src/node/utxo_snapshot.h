@@ -1,27 +1,31 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2022 The Bitcoin Core developers
+// Copyright (c) 2009-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_NODE_UTXO_SNAPSHOT_H
 #define BITCOIN_NODE_UTXO_SNAPSHOT_H
 
-#include <chainparams.h>
 #include <kernel/chainparams.h>
 #include <kernel/cs_main.h>
-#include <serialize.h>
+#include <kernel/messagestartchars.h>
 #include <sync.h>
+#include <tinyformat.h>
 #include <uint256.h>
 #include <util/chaintype.h>
-#include <util/check.h>
 #include <util/fs.h>
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
+#include <ios>
 #include <optional>
+#include <set>
+#include <string>
 #include <string_view>
 
 // UTXO set snapshot magic bytes
-static constexpr std::array<uint8_t, 5> SNAPSHOT_MAGIC_BYTES = {'u', 't', 'x', 'o', 0xff};
+inline constexpr std::array<uint8_t, 5> SNAPSHOT_MAGIC_BYTES = {'u', 't', 'x', 'o', 0xff};
 
 class Chainstate;
 
@@ -32,7 +36,7 @@ namespace node {
 //! before being used. Thus, new fields should be added only if needed.
 class SnapshotMetadata
 {
-    inline static const uint16_t VERSION{2};
+    static constexpr uint16_t VERSION{2};
     const std::set<uint16_t> m_supported_versions{VERSION};
     const MessageStartChars m_network_magic;
 public:
@@ -77,7 +81,7 @@ public:
         // Read the version
         uint16_t version;
         s >> version;
-        if (m_supported_versions.find(version) == m_supported_versions.end()) {
+        if (!m_supported_versions.contains(version)) {
             throw std::ios_base::failure(strprintf("Version of snapshot %s does not match any of the supported versions.", version));
         }
 
@@ -106,7 +110,7 @@ public:
 //!
 //! Because we only allow loading a single snapshot at a time, there will only be one
 //! chainstate directory with this filename present within it.
-const fs::path SNAPSHOT_BLOCKHASH_FILENAME{"base_blockhash"};
+inline const fs::path SNAPSHOT_BLOCKHASH_FILENAME{"base_blockhash"};
 
 //! Write out the blockhash of the snapshot base block that was used to construct
 //! this chainstate. This value is read in during subsequent initializations and
@@ -121,11 +125,11 @@ std::optional<uint256> ReadSnapshotBaseBlockhash(fs::path chaindir)
 
 //! Suffix appended to the chainstate (leveldb) dir when created based upon
 //! a snapshot.
-constexpr std::string_view SNAPSHOT_CHAINSTATE_SUFFIX = "_snapshot";
+inline constexpr std::string_view SNAPSHOT_CHAINSTATE_SUFFIX = "_snapshot";
 
 
 //! Return a path to the snapshot-based chainstate dir, if one exists.
-std::optional<fs::path> FindSnapshotChainstateDir(const fs::path& data_dir);
+std::optional<fs::path> FindAssumeutxoChainstateDir(const fs::path& data_dir);
 
 } // namespace node
 

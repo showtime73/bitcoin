@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2023 The Bitcoin Core developers
+# Copyright (c) 2023-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test wallet change address selection"""
@@ -17,6 +17,8 @@ class WalletChangeAddressTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 3
+        # whitelist peers to speed up tx relay / mempool sync
+        self.noban_tx_relay = True
         # discardfee is used to make change outputs less likely in the change_pos test
         self.extra_args = [
             [],

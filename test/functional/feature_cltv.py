@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2015-2022 The Bitcoin Core developers
+# Copyright (c) 2015-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test BIP65 (CHECKLOCKTIMEVERIFY).
@@ -10,7 +10,6 @@ Test that the CHECKLOCKTIMEVERIFY soft-fork activates.
 from test_framework.blocktools import (
     TIME_GENESIS_BLOCK,
     create_block,
-    create_coinbase,
 )
 from test_framework.messages import (
     CTransaction,
@@ -121,7 +120,7 @@ class BIP65Test(BitcoinTestFramework):
 
         tip = self.nodes[0].getbestblockhash()
         block_time = self.nodes[0].getblockheader(tip)['mediantime'] + 1
-        block = create_block(int(tip, 16), create_coinbase(CLTV_HEIGHT - 1), block_time, version=3, txlist=invalid_cltv_txs)
+        block = create_block(int(tip, 16), height=CLTV_HEIGHT - 1, ntime=block_time, version=3, txlist=invalid_cltv_txs)
         block.solve()
 
         self.test_cltv_info(is_active=False)  # Not active as of current tip and next block does not need to obey rules
@@ -132,7 +131,7 @@ class BIP65Test(BitcoinTestFramework):
         self.log.info("Test that blocks must now be at least version 4")
         tip = block.hash_int
         block_time += 1
-        block = create_block(tip, create_coinbase(CLTV_HEIGHT), block_time, version=3)
+        block = create_block(tip, height=CLTV_HEIGHT, ntime=block_time, version=3)
         block.solve()
 
         with self.nodes[0].assert_debug_log(expected_msgs=[f'{block.hash_hex}, bad-version(0x00000003)']):
@@ -153,12 +152,14 @@ class BIP65Test(BitcoinTestFramework):
             coin_vout = coin.prevout.n
             cltv_invalidate(spendtx, i)
 
+            blk_rej = "block-script-verify-flag-failed"
+            tx_rej = "mempool-script-verify-flag-failed"
             expected_cltv_reject_reason = [
-                "mandatory-script-verify-flag-failed (Operation not valid with the current stack size)",
-                "mandatory-script-verify-flag-failed (Negative locktime)",
-                "mandatory-script-verify-flag-failed (Locktime requirement not satisfied)",
-                "mandatory-script-verify-flag-failed (Locktime requirement not satisfied)",
-                "mandatory-script-verify-flag-failed (Locktime requirement not satisfied)",
+                " (Operation not valid with the current stack size)",
+                " (Negative locktime)",
+                " (Locktime requirement not satisfied)",
+                " (Locktime requirement not satisfied)",
+                " (Locktime requirement not satisfied)",
             ][i]
             # First we show that this tx is valid except for CLTV by getting it
             # rejected from the mempool for exactly that reason.
@@ -169,8 +170,8 @@ class BIP65Test(BitcoinTestFramework):
                     'txid': spendtx_txid,
                     'wtxid': spendtx_wtxid,
                     'allowed': False,
-                    'reject-reason': expected_cltv_reject_reason,
-                    'reject-details': expected_cltv_reject_reason + f", input 0 of {spendtx_txid} (wtxid {spendtx_wtxid}), spending {coin_txid}:{coin_vout}"
+                    'reject-reason': tx_rej + expected_cltv_reject_reason,
+                    'reject-details': tx_rej + expected_cltv_reject_reason + f", input 0 of {spendtx_txid} (wtxid {spendtx_wtxid}), spending {coin_txid}:{coin_vout}"
                 }],
                 self.nodes[0].testmempoolaccept(rawtxs=[spendtx.serialize().hex()], maxfeerate=0),
             )
@@ -180,7 +181,7 @@ class BIP65Test(BitcoinTestFramework):
             block.hashMerkleRoot = block.calc_merkle_root()
             block.solve()
 
-            with self.nodes[0].assert_debug_log(expected_msgs=[f'Block validation error: {expected_cltv_reject_reason}']):
+            with self.nodes[0].assert_debug_log(expected_msgs=[f'Block validation error: {blk_rej + expected_cltv_reject_reason}']):
                 peer.send_and_ping(msg_block(block))
                 assert_equal(int(self.nodes[0].getbestblockhash(), 16), tip)
                 peer.sync_with_ping()

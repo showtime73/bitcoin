@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2017-2022 The Bitcoin Core developers
+# Copyright (c) 2017-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test mempool acceptance of raw transactions."""
@@ -10,6 +10,10 @@ import math
 
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.blocktools import MAX_STANDARD_TX_WEIGHT
+from test_framework.mempool_util import (
+    DEFAULT_MIN_RELAY_TX_FEE,
+    DEFAULT_INCREMENTAL_RELAY_FEE,
+)
 from test_framework.messages import (
     MAX_BIP125_RBF_SEQUENCE,
     COIN,
@@ -78,10 +82,17 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         node = self.nodes[0]
         self.wallet = MiniWallet(node)
 
+        assert_equal(node.getmempoolinfo()['permitbaremultisig'], False)
+
         self.log.info('Start with empty mempool, and 200 blocks')
         self.mempool_size = 0
         assert_equal(node.getblockcount(), 200)
         assert_equal(node.getmempoolinfo()['size'], self.mempool_size)
+
+        self.log.info("Check default settings")
+        # Settings are listed in BTC/kvB
+        assert_equal(node.getmempoolinfo()['minrelaytxfee'], Decimal(DEFAULT_MIN_RELAY_TX_FEE) / COIN)
+        assert_equal(node.getmempoolinfo()['incrementalrelayfee'], Decimal(DEFAULT_INCREMENTAL_RELAY_FEE) / COIN)
 
         self.log.info('Should not accept garbage to testmempoolaccept')
         assert_raises_rpc_error(-3, 'JSON value of type string is not of expected type array', lambda: node.testmempoolaccept(rawtxs='ff00baar'))
@@ -125,7 +136,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         raw_tx_0 = tx.serialize().hex()
         txid_0 = tx.txid_hex
         self.check_mempool_result(
-            result_expected=[{'txid': txid_0, 'allowed': True, 'vsize': tx.get_vsize(), 'fees': {'base': fee}}],
+            result_expected=[{'txid': txid_0, 'allowed': True, 'vsize_adjusted': tx.get_vsize(),  'vsize': tx.get_vsize(), 'vsize_bip141': tx.get_vsize(),'fees': {'base': fee}}],
             rawtxs=[raw_tx_0],
         )
 
@@ -140,7 +151,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         tx = tx_from_hex(raw_tx_final)
         fee_expected = Decimal('50.0') - output_amount
         self.check_mempool_result(
-            result_expected=[{'txid': tx.txid_hex, 'allowed': True, 'vsize': tx.get_vsize(), 'fees': {'base': fee_expected}}],
+            result_expected=[{'txid': tx.txid_hex, 'allowed': True, 'vsize_adjusted': tx.get_vsize(), 'vsize': tx.get_vsize(), 'vsize_bip141': tx.get_vsize(), 'fees': {'base': fee_expected}}],
             rawtxs=[tx.serialize().hex()],
             maxfeerate=0,
         )
@@ -161,7 +172,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         raw_tx_0 = tx.serialize().hex()
         txid_0 = tx.txid_hex
         self.check_mempool_result(
-            result_expected=[{'txid': txid_0, 'allowed': True, 'vsize': tx.get_vsize(), 'fees': {'base': (2 * fee)}}],
+            result_expected=[{'txid': txid_0, 'allowed': True, 'vsize_adjusted': tx.get_vsize(), 'vsize': tx.get_vsize(), 'vsize_bip141': tx.get_vsize(), 'fees': {'base': (2 * fee)}}],
             rawtxs=[raw_tx_0],
         )
         node.sendrawtransaction(hexstring=tx.serialize().hex(), maxfeerate=0)
@@ -207,7 +218,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         raw_tx_reference = tx.serialize().hex()
         # Reference tx should be valid on itself
         self.check_mempool_result(
-            result_expected=[{'txid': tx.txid_hex, 'allowed': True, 'vsize': tx.get_vsize(), 'fees': { 'base': Decimal('0.1') - Decimal('0.05')}}],
+            result_expected=[{'txid': tx.txid_hex, 'allowed': True, 'vsize_adjusted': tx.get_vsize(), 'vsize': tx.get_vsize(), 'vsize_bip141': tx.get_vsize(), 'fees': { 'base': Decimal('0.1') - Decimal('0.05')}}],
             rawtxs=[tx.serialize().hex()],
             maxfeerate=0,
         )
@@ -343,7 +354,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         tx.vout.append(CTxOut(0, CScript([OP_RETURN, b'\xff' * 50000])))
 
         self.check_mempool_result(
-            result_expected=[{'txid': tx.txid_hex, 'allowed': True, 'vsize': tx.get_vsize(), 'fees': {'base': Decimal('0.05')}}],
+            result_expected=[{'txid': tx.txid_hex, 'allowed': True, 'vsize_adjusted': tx.get_vsize(), 'vsize': tx.get_vsize(), 'vsize_bip141': tx.get_vsize(), 'fees': {'base': Decimal('0.05')}}],
             rawtxs=[tx.serialize().hex()],
             maxfeerate=0
         )
@@ -355,7 +366,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         tx.vout[0].scriptPubKey = CScript([OP_RETURN, b'\xff'])
         tx.vout = [tx.vout[0]] * op_return_count
         self.check_mempool_result(
-            result_expected=[{"txid": tx.txid_hex, "allowed": True, "vsize": tx.get_vsize(), "fees": {"base": Decimal("0.05000026")}}],
+            result_expected=[{"txid": tx.txid_hex, "allowed": True, "vsize_adjusted": tx.get_vsize(), "vsize": tx.get_vsize(), 'vsize_bip141': tx.get_vsize(), "fees": {"base": Decimal("0.05000026")}}],
             rawtxs=[tx.serialize().hex()],
         )
 
@@ -366,7 +377,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         tx.vout[0].scriptPubKey = CScript([OP_RETURN, b"\xff" * (data_len)])
         assert_equal(tx.get_vsize(), int(MAX_STANDARD_TX_WEIGHT / 4))
         self.check_mempool_result(
-            result_expected=[{"txid": tx.txid_hex, "allowed": True, "vsize": tx.get_vsize(), "fees": {"base": Decimal("0.1") - Decimal("0.05")}}],
+            result_expected=[{"txid": tx.txid_hex, "allowed": True, "vsize_adjusted": tx.get_vsize(), "vsize": tx.get_vsize(), 'vsize_bip141': tx.get_vsize(), "fees": {"base": Decimal("0.1") - Decimal("0.05")}}],
             rawtxs=[tx.serialize().hex()],
         )
         tx.vout[0].scriptPubKey = CScript([OP_RETURN, b"\xff" * (data_len + 1)])
@@ -419,7 +430,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         tx.vout[0] = CTxOut(COIN - 1000, DUMMY_MIN_OP_RETURN_SCRIPT)
         assert_equal(len(tx.serialize_without_witness()), MIN_STANDARD_TX_NONWITNESS_SIZE)
         self.check_mempool_result(
-            result_expected=[{'txid': tx.txid_hex, 'allowed': True, 'vsize': tx.get_vsize(), 'fees': { 'base': Decimal('0.00001000')}}],
+            result_expected=[{'txid': tx.txid_hex, 'allowed': True, 'vsize_adjusted': tx.get_vsize(), 'vsize': tx.get_vsize(), 'vsize_bip141': tx.get_vsize(), 'fees': { 'base': Decimal('0.00001000')}}],
             rawtxs=[tx.serialize().hex()],
             maxfeerate=0,
         )
@@ -457,7 +468,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         assert_equal(anchor_spend.txid_hex, anchor_spend.wtxid_hex)
 
         self.check_mempool_result(
-            result_expected=[{'txid': anchor_spend.txid_hex, 'allowed': True, 'vsize': anchor_spend.get_vsize(), 'fees': { 'base': Decimal('0.00000700')}}],
+            result_expected=[{'txid': anchor_spend.txid_hex, 'allowed': True, 'vsize_adjusted': anchor_spend.get_vsize(), 'vsize': anchor_spend.get_vsize(), 'vsize_bip141': anchor_spend.get_vsize(), 'fees': { 'base': Decimal('0.00000700')}}],
             rawtxs=[anchor_spend.serialize().hex()],
             maxfeerate=0,
         )
@@ -473,7 +484,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         nested_anchor_spend.vout.append(CTxOut(nested_anchor_tx.vout[0].nValue - int(fee*COIN), script_to_p2wsh_script(CScript([OP_TRUE]))))
 
         self.check_mempool_result(
-            result_expected=[{'txid': nested_anchor_spend.txid_hex, 'allowed': False, 'reject-reason': 'non-mandatory-script-verify-flag (Witness version reserved for soft-fork upgrades)'}],
+            result_expected=[{'txid': nested_anchor_spend.txid_hex, 'allowed': False, 'reject-reason': 'mempool-script-verify-flag-failed (Witness version reserved for soft-fork upgrades)'}],
             rawtxs=[nested_anchor_spend.serialize().hex()],
             maxfeerate=0,
         )
@@ -492,7 +503,7 @@ class MempoolAcceptanceTest(BitcoinTestFramework):
         sign_input_legacy(tx_spend, 0, tx.vout[0].scriptPubKey, privkey, sighash_type=SIGHASH_ALL)
         tx_spend.vin[0].scriptSig = bytes(CScript([OP_0])) + tx_spend.vin[0].scriptSig
         self.check_mempool_result(
-            result_expected=[{'txid': tx_spend.txid_hex, 'allowed': True, 'vsize': tx_spend.get_vsize(), 'fees': { 'base': Decimal('0.00000700')}}],
+            result_expected=[{'txid': tx_spend.txid_hex, 'allowed': True, 'vsize_adjusted': tx_spend.get_vsize(), 'vsize': tx_spend.get_vsize(), 'vsize_bip141': tx_spend.get_vsize(), 'fees': { 'base': Decimal('0.00000700')}}],
             rawtxs=[tx_spend.serialize().hex()],
             maxfeerate=0,
         )

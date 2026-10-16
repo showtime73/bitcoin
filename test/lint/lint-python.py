@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (c) 2022 The Bitcoin Core developers
+# Copyright (c) 2022-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -20,9 +20,9 @@ os.environ["MYPY_CACHE_DIR"] = str(cache_dir)
 
 DEPS = ['lief', 'mypy', 'pyzmq']
 
-# Only .py files in test/functional and contrib/devtools have type annotations
+# Only .py files in test/functional and contrib/(devtools|guix) have type annotations
 # enforced.
-MYPY_FILES_ARGS = ['git', 'ls-files', 'test/functional/*.py', 'contrib/devtools/*.py']
+MYPY_FILES_ARGS = ['git', 'ls-files', 'test/functional/*.py', 'contrib/devtools/*.py', 'contrib/guix/*.py']
 
 
 def check_dependencies():
@@ -37,7 +37,7 @@ def check_dependencies():
 def main():
     check_dependencies()
 
-    mypy_files = subprocess.check_output(MYPY_FILES_ARGS).decode("utf-8").splitlines()
+    mypy_files = subprocess.check_output(MYPY_FILES_ARGS, text=True).splitlines()
     mypy_args = ['mypy', '--show-error-codes'] + mypy_files
 
     try:

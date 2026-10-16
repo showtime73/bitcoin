@@ -5,21 +5,25 @@
 #ifndef BITCOIN_UTIL_STRING_H
 #define BITCOIN_UTIL_STRING_H
 
-#include <span.h>
-
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
-#include <cstring>
+#include <initializer_list>
 #include <locale>
+#include <optional>
+#include <span>
 #include <sstream>
-#include <string>      // IWYU pragma: export
-#include <string_view> // IWYU pragma: export
+#include <string>
+#include <string_view>
 #include <vector>
+
+#include <attributes.h>
 
 namespace util {
 namespace detail {
 template <unsigned num_params>
-constexpr static void CheckNumFormatSpecifiers(const char* str)
+constexpr void CheckNumFormatSpecifiers(const char* str)
 {
     unsigned count_normal{0}; // Number of "normal" specifiers, like %s
     unsigned count_pos{0};    // Max number in positional specifier, like %8$s
@@ -94,24 +98,37 @@ struct ConstevalFormatString {
     consteval ConstevalFormatString(const char* str) : fmt{str} { detail::CheckNumFormatSpecifiers<num_params>(fmt); }
 };
 
-void ReplaceAll(std::string& in_out, const std::string& search, const std::string& substitute);
+/// Replace every non-overlapping occurrence of `search` with `substitute`, treating both literally; the replacement text is not searched again.
+void ReplaceAll(std::string& in_out, std::string_view search, std::string_view substitute);
 
 /** Split a string on any char found in separators, returning a vector.
  *
  * If sep does not occur in sp, a singleton with the entirety of sp is returned.
  *
+ * @param[in] include_sep Whether to include the separator at the end of the left side of the splits.
+ *
  * Note that this function does not care about braces, so splitting
  * "foo(bar(1),2),3) on ',' will return {"foo(bar(1)", "2)", "3)"}.
+ *
+ * If include_sep == true, splitting "foo(bar(1),2),3) on ','
+ * will return:
+ *  - foo(bar(1),
+ *  - 2),
+ *  - 3)
  */
 template <typename T = std::span<const char>>
-std::vector<T> Split(const std::span<const char>& sp, std::string_view separators)
+std::vector<T> Split(std::span<const char> sp LIFETIMEBOUND, std::string_view separators, bool include_sep = false)
 {
     std::vector<T> ret;
     auto it = sp.begin();
     auto start = it;
     while (it != sp.end()) {
         if (separators.find(*it) != std::string::npos) {
-            ret.emplace_back(start, it);
+            if (include_sep) {
+                ret.emplace_back(start, it + 1);
+            } else {
+                ret.emplace_back(start, it);
+            }
             start = it + 1;
         }
         ++it;
@@ -128,9 +145,9 @@ std::vector<T> Split(const std::span<const char>& sp, std::string_view separator
  * "foo(bar(1),2),3) on ',' will return {"foo(bar(1)", "2)", "3)"}.
  */
 template <typename T = std::span<const char>>
-std::vector<T> Split(const std::span<const char>& sp, char sep)
+std::vector<T> Split(std::span<const char> sp LIFETIMEBOUND, char sep, bool include_sep = false)
 {
-    return Split<T>(sp, std::string_view{&sep, 1});
+    return Split<T>(sp, std::string_view{&sep, 1}, include_sep);
 }
 
 [[nodiscard]] inline std::vector<std::string> SplitString(std::string_view str, char sep)
@@ -143,7 +160,7 @@ std::vector<T> Split(const std::span<const char>& sp, char sep)
     return Split<std::string>(str, separators);
 }
 
-[[nodiscard]] inline std::string_view TrimStringView(std::string_view str, std::string_view pattern = " \f\n\r\t\v")
+[[nodiscard]] inline std::string_view TrimStringView(std::string_view str LIFETIMEBOUND, std::string_view pattern = " \f\n\r\t\v")
 {
     std::string::size_type front = str.find_first_not_of(pattern);
     if (front == std::string::npos) {
@@ -158,7 +175,7 @@ std::vector<T> Split(const std::span<const char>& sp, char sep)
     return std::string(TrimStringView(str, pattern));
 }
 
-[[nodiscard]] inline std::string_view RemoveSuffixView(std::string_view str, std::string_view suffix)
+[[nodiscard]] inline std::string_view RemoveSuffixView(std::string_view str LIFETIMEBOUND, std::string_view suffix)
 {
     if (str.ends_with(suffix)) {
         return str.substr(0, str.size() - suffix.size());
@@ -166,7 +183,7 @@ std::vector<T> Split(const std::span<const char>& sp, char sep)
     return str;
 }
 
-[[nodiscard]] inline std::string_view RemovePrefixView(std::string_view str, std::string_view prefix)
+[[nodiscard]] inline std::string_view RemovePrefixView(std::string_view str LIFETIMEBOUND, std::string_view prefix)
 {
     if (str.starts_with(prefix)) {
         return str.substr(prefix.size());
@@ -216,14 +233,14 @@ inline std::string MakeUnorderedList(const std::vector<std::string>& items)
 }
 
 /**
- * Check if a string does not contain any embedded NUL (\0) characters
+ * Check if a string contains any embedded NUL (\0) characters
  */
-[[nodiscard]] inline bool ContainsNoNUL(std::string_view str) noexcept
+[[nodiscard]] inline bool ContainsNUL(std::string_view str) noexcept
 {
     for (auto c : str) {
-        if (c == 0) return false;
+        if (c == 0) return true;
     }
-    return true;
+    return false;
 }
 
 /**
@@ -248,6 +265,46 @@ template <typename T1, size_t PREFIX_LEN>
     return obj.size() >= PREFIX_LEN &&
            std::equal(std::begin(prefix), std::end(prefix), std::begin(obj));
 }
+
+class LineReader
+{
+    const std::string_view m_str;
+    const size_t m_max_line_length;
+    std::string_view::iterator m_it;
+
+public:
+    explicit LineReader(std::string_view str LIFETIMEBOUND, size_t max_line_length);
+
+    /**
+     * Returns a string from current iterator position up to (but not including) next \n
+     * and advances iterator to the character following the \n on success.
+     * Will not return a line longer than max_line_length.
+     * @returns the next string from the buffer.
+     *          std::nullopt if end of buffer is reached without finding a \n.
+     * @throws a std::runtime_error if max_line_length + 1 bytes are read without finding \n.
+     */
+    std::optional<std::string_view> ReadLine() LIFETIMEBOUND;
+
+    /**
+     * Returns string from current iterator position of specified length
+     * if possible and advances iterator on success.
+     * May exceed max_line_length but will not read past end of buffer.
+     * @param[in]   len     The number of bytes to read from the buffer
+     * @returns a string of the expected length.
+     * @throws a std::runtime_error if there is not enough data in the buffer.
+     */
+    std::string_view ReadLength(size_t len) LIFETIMEBOUND;
+
+    /**
+     * Returns remaining size of bytes in buffer
+     */
+    size_t Remaining() const;
+
+    /**
+     * Returns number of bytes already read from buffer
+     */
+    size_t Consumed() const;
+};
 } // namespace util
 
 #endif // BITCOIN_UTIL_STRING_H

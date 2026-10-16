@@ -1,4 +1,4 @@
-// Copyright (c) 2017-2022 The Bitcoin Core developers
+// Copyright (c) 2017-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -6,13 +6,32 @@
 #define BITCOIN_INDEX_TXINDEX_H
 
 #include <index/base.h>
+#include <primitives/transaction.h>
+#include <uint256.h>
 
-static constexpr bool DEFAULT_TXINDEX{false};
+#include <cstddef>
+#include <memory>
+#include <optional>
+
+namespace interfaces {
+class Chain;
+}
+namespace txindex_tests {
+class TxIndexTest;
+}
+
+inline constexpr bool DEFAULT_TXINDEX{false};
+
+/// A found transaction and the hash of the block that contains it.
+struct TxIndexResult {
+    uint256 block_hash;
+    CTransactionRef tx;
+};
 
 /**
  * TxIndex is used to look up transactions included in the blockchain by hash.
- * The index is written to a LevelDB database and records the filesystem
- * location of each transaction by transaction hash.
+ * The index is written to a LevelDB database and records the block sequence
+ * number and serialized block offset of each transaction by transaction hash.
  */
 class TxIndex final : public BaseIndex
 {
@@ -20,9 +39,13 @@ protected:
     class DB;
 
 private:
+    friend class txindex_tests::TxIndexTest;
     const std::unique_ptr<DB> m_db;
 
     bool AllowPrune() const override { return false; }
+
+    /// Look up a transaction among the legacy (full-txid) entries.
+    std::optional<TxIndexResult> FindLegacyTx(const Txid& tx_hash) const;
 
 protected:
     bool CustomAppend(const interfaces::BlockInfo& block) override;
@@ -39,10 +62,8 @@ public:
     /// Look up a transaction by hash.
     ///
     /// @param[in]   tx_hash  The hash of the transaction to be returned.
-    /// @param[out]  block_hash  The hash of the block the transaction is found in.
-    /// @param[out]  tx  The transaction itself.
-    /// @return  true if transaction is found, false otherwise
-    bool FindTx(const uint256& tx_hash, uint256& block_hash, CTransactionRef& tx) const;
+    /// @return  the transaction and containing block hash, or nullopt if it is not found
+    std::optional<TxIndexResult> FindTx(const Txid& tx_hash) const;
 };
 
 /// The global transaction index, used in GetTransaction. May be null.

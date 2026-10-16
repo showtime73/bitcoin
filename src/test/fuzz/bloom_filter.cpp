@@ -1,4 +1,4 @@
-// Copyright (c) 2020-2021 The Bitcoin Core developers
+// Copyright (c) 2020-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -24,8 +24,7 @@ FUZZ_TARGET(bloom_filter)
         1.0 / fuzzed_data_provider.ConsumeIntegralInRange<unsigned int>(1, std::numeric_limits<unsigned int>::max()),
         fuzzed_data_provider.ConsumeIntegral<unsigned int>(),
         static_cast<unsigned char>(fuzzed_data_provider.PickValueInArray({BLOOM_UPDATE_NONE, BLOOM_UPDATE_ALL, BLOOM_UPDATE_P2PUBKEY_ONLY, BLOOM_UPDATE_MASK}))};
-    LIMITED_WHILE(good_data && fuzzed_data_provider.remaining_bytes() > 0, 10'000)
-    {
+    LIMITED_WHILE (good_data && fuzzed_data_provider.remaining_bytes() > 0, 10'000) {
         CallOneOf(
             fuzzed_data_provider,
             [&] {

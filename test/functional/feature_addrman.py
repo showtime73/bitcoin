@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2021-2022 The Bitcoin Core developers
+# Copyright (c) 2021-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test addrman functionality"""
@@ -52,12 +52,13 @@ class AddrmanTest(BitcoinTestFramework):
 
     def run_test(self):
         peers_dat = os.path.join(self.nodes[0].chain_path, "peers.dat")
-        init_error = lambda reason: (
-            f"Error: Invalid or corrupt peers.dat \\({reason}\\). If you believe this "
-            f"is a bug, please report it to {self.config['environment']['CLIENT_BUGREPORT']}. "
-            f'As a workaround, you can move the file \\("{re.escape(peers_dat)}"\\) out of the way \\(rename, '
-            "move, or delete\\) to have a new one created on the next start."
-        )
+        def init_error(reason):
+            return (
+                f"Error: Invalid or corrupt peers.dat \\({reason}\\). If you believe this "
+                f"is a bug, please report it to {self.config['environment']['CLIENT_BUGREPORT']}. "
+                f'As a workaround, you can move the file \\("{re.escape(peers_dat)}"\\) out of the way \\(rename, '
+                "move, or delete\\) to have a new one created on the next start."
+            )
 
         self.log.info("Check that mocked addrman is valid")
         self.stop_node(0)

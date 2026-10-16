@@ -262,7 +262,8 @@ size_t PosixLockedPageAllocator::GetLimit()
 #ifdef RLIMIT_MEMLOCK
     struct rlimit rlim;
     if (getrlimit(RLIMIT_MEMLOCK, &rlim) == 0) {
-        if (rlim.rlim_cur != RLIM_INFINITY) {
+        if (rlim.rlim_cur != RLIM_INFINITY &&
+            std::cmp_less_equal(rlim.rlim_cur, static_cast<rlim_t>(std::numeric_limits<size_t>::max()))) {
             return rlim.rlim_cur;
         }
     }
@@ -398,4 +399,11 @@ void LockedPoolManager::CreateInstance()
 #endif
     static LockedPoolManager instance(std::move(allocator));
     LockedPoolManager::_instance = &instance;
+}
+
+LockedPoolManager& LockedPoolManager::Instance()
+{
+    static std::once_flag init_flag;
+    std::call_once(init_flag, LockedPoolManager::CreateInstance);
+    return *LockedPoolManager::_instance;
 }

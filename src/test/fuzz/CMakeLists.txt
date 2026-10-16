@@ -19,14 +19,18 @@ add_executable(fuzz
   block.cpp
   block_header.cpp
   block_index.cpp
+  block_index_tree.cpp
+  block_policy_estimator.cpp
   blockfilter.cpp
   bloom_filter.cpp
   buffered_file.cpp
   chain.cpp
   checkqueue.cpp
   cluster_linearize.cpp
+  cmpctblock.cpp
   coins_view.cpp
   coinscache_sim.cpp
+  connect_block.cpp
   connman.cpp
   crypto.cpp
   crypto_aes256.cpp
@@ -38,9 +42,11 @@ add_executable(fuzz
   crypto_hkdf_hmac_sha256_l32.cpp
   crypto_poly1305.cpp
   cuckoocache.cpp
+  dbwrapper.cpp
   decode_tx.cpp
   descriptor_parse.cpp
   deserialize.cpp
+  difference_formatter.cpp
   eval_script.cpp
   feefrac.cpp
   fee_rate.cpp
@@ -75,6 +81,7 @@ add_executable(fuzz
   overflow.cpp
   p2p_handshake.cpp
   p2p_headers_presync.cpp
+  p2p_private_broadcast.cpp
   p2p_transport_serialization.cpp
   pcp.cpp
   package_eval.cpp
@@ -84,12 +91,12 @@ add_executable(fuzz
   parse_script.cpp
   parse_univalue.cpp
   partially_downloaded_block.cpp
-  policy_estimator.cpp
   policy_estimator_io.cpp
   poolresource.cpp
   pow.cpp
   prevector.cpp
   primitives_transaction.cpp
+  private_broadcast.cpp
   process_message.cpp
   process_messages.cpp
   protocol.cpp
@@ -118,6 +125,7 @@ add_executable(fuzz
   string.cpp
   strprintf.cpp
   system.cpp
+  threadpool.cpp
   timeoffsets.cpp
   torcontrol.cpp
   transaction.cpp
@@ -134,6 +142,13 @@ add_executable(fuzz
   vecdeque.cpp
   versionbits.cpp
 )
+
+if(ENABLE_IPC)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/src/ipc/test/fuzz ipc)
+endif()
+
+add_windows_application_manifest(fuzz)
+
 target_link_libraries(fuzz
   core_interface
   fuzzer_interface
@@ -146,7 +161,6 @@ target_link_libraries(fuzz
   univalue
   secp256k1
   Boost::headers
-  libevent::extra
 )
 
 if(ENABLE_WALLET)

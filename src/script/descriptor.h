@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2021 The Bitcoin Core developers
+// Copyright (c) 2018-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -6,12 +6,23 @@
 #define BITCOIN_SCRIPT_DESCRIPTOR_H
 
 #include <outputtype.h>
-#include <script/script.h>
-#include <script/sign.h>
-#include <script/signingprovider.h>
+#include <pubkey.h>
+#include <uint256.h>
+#include <util/expected.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <optional>
+#include <set>
+#include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
+
+class CScript;
+class SigningProvider;
+struct FlatSigningProvider;
 
 using ExtPubKeyMap = std::unordered_map<uint32_t, CExtPubKey>;
 
@@ -108,14 +119,35 @@ struct Descriptor {
     /** Convert the descriptor back to a string, undoing parsing. */
     virtual std::string ToString(bool compat_format=false) const = 0;
 
-    /** Whether this descriptor will return one scriptPubKey or multiple (aka is or is not combo) */
+    /** Convert the descriptor to the canonical string.
+     * The canonical string is the same as the public string but always uses h as the hardened indicator
+     */
+    virtual std::string ToCanonicalString() const = 0;
+
+    /** Whether this descriptor will return at most one scriptPubKey or multiple (aka is or is not combo) */
     virtual bool IsSingleType() const = 0;
 
-    /** Convert the descriptor to a private string. This fails if the provided provider does not have the relevant private keys. */
+    /** Whether the given provider has all private keys required by this descriptor.
+     * @return `false` if the descriptor doesn't have any keys or subdescriptors,
+     *         or if the provider does not have all private keys required by
+     *         the descriptor.
+     */
+    virtual bool HavePrivateKeys(const SigningProvider& provider) const = 0;
+
+    /** Convert the descriptor to a private string. This uses public keys if the relevant private keys are not in the SigningProvider.
+     *  If none of the relevant private keys are available, the output string in the "out" parameter will not contain any private key information,
+     *  and this function will return "false".
+     *  @param[in] provider The SigningProvider to query for private keys.
+     *  @param[out] out The resulting descriptor string, containing private keys if available.
+     *  @returns true if at least one private key available.
+     */
     virtual bool ToPrivateString(const SigningProvider& provider, std::string& out) const = 0;
 
     /** Convert the descriptor to a normalized string. Normalized descriptors have the xpub at the last hardened step. This fails if the provided provider does not have the private keys to derive that xpub. */
     virtual bool ToNormalizedString(const SigningProvider& provider, std::string& out, const DescriptorCache* cache = nullptr) const = 0;
+
+    /** Whether the descriptor can be used to produce its address(es) without needing a cache or private keys. */
+    virtual bool CanSelfExpand() const = 0;
 
     /** Expand a descriptor at a specified position.
      *
@@ -165,7 +197,26 @@ struct Descriptor {
      * @param[out] ext_pubs Any extended public keys
      */
     virtual void GetPubKeys(std::set<CPubKey>& pubkeys, std::set<CExtPubKey>& ext_pubs) const = 0;
+
+    /** Whether this descriptor produces any scripts with the Expand functions */
+    virtual bool HasScripts() const = 0;
+
+    /** Semantic/safety warnings (includes subdescriptors). */
+    virtual std::vector<std::string> Warnings() const = 0;
+
+    /** Get the maximum key expression index. Used only for tests */
+    virtual uint32_t GetMaxKeyExpr() const = 0;
+
+    /** Get the number of key expressions in this descriptor. Used only for tests */
+    virtual size_t GetKeyCount() const = 0;
 };
+
+/** Validate the numeric bounds of a descriptor key-expression range
+ *  [low, high] (high inclusive). On success returns an Expected with no
+ *  value; on failure returns the first violated invariant's user-facing
+ *  message.
+ */
+util::Expected<void, std::string> CheckDescriptorRangeBounds(int64_t low, int64_t high);
 
 /** Parse a `descriptor` string. Included private keys are put in `out`.
  *
@@ -175,7 +226,7 @@ struct Descriptor {
  * If a parse error occurs, or the checksum is missing/invalid, or anything
  * else is wrong, an empty vector is returned.
  */
-std::vector<std::unique_ptr<Descriptor>> Parse(const std::string& descriptor, FlatSigningProvider& out, std::string& error, bool require_checksum = false);
+std::vector<std::unique_ptr<Descriptor>> Parse(std::string_view descriptor, FlatSigningProvider& out, std::string& error, bool require_checksum = false);
 
 /** Get the checksum for a `descriptor`.
  *
@@ -201,9 +252,12 @@ std::string GetDescriptorChecksum(const std::string& descriptor);
  */
 std::unique_ptr<Descriptor> InferDescriptor(const CScript& script, const SigningProvider& provider);
 
-/** Unique identifier that may not change over time, unless explicitly marked as not backwards compatible.
-*   This is not part of BIP 380, not guaranteed to be interoperable and should not be exposed to the user.
+/** Hash of the COMPAT string representation of the descriptor that is not supposed to change over time.
+ * Due to the hash's usage in previous versions, the COMPAT string is computed with some quirks.
+ *
+ * The hash is the sha256 of the public descriptor using apostrophes as the hardened indicator, except inside of
+ * Miniscript expressions, where the public serialization is used as provided.
 */
-uint256 DescriptorID(const Descriptor& desc);
+uint256 CompatDescriptorHash(const Descriptor& desc);
 
 #endif // BITCOIN_SCRIPT_DESCRIPTOR_H

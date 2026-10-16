@@ -15,6 +15,7 @@
 #include <test/fuzz/fuzz.h>
 #include <test/fuzz/util.h>
 #include <test/util/setup_common.h>
+#include <test/util/time.h>
 #include <uint256.h>
 #include <util/check.h>
 #include <util/feefrac.h>
@@ -40,7 +41,7 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
     SeedRandomStateForTest(SeedRand::ZEROS);
     FuzzedDataProvider fuzzed_data_provider(buffer.data(), buffer.size());
     FastRandomContext orphanage_rng{ConsumeUInt256(fuzzed_data_provider)};
-    SetMockTime(ConsumeTime(fuzzed_data_provider));
+    FakeNodeClock clock{ConsumeTime(fuzzed_data_provider)};
 
     auto orphanage = node::MakeTxOrphanage();
     std::vector<COutPoint> outpoints; // Duplicates are tolerated
@@ -55,8 +56,7 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
 
     std::vector<CTransactionRef> tx_history;
 
-    LIMITED_WHILE(outpoints.size() < 200'000 && fuzzed_data_provider.ConsumeBool(), 1000)
-    {
+    LIMITED_WHILE (outpoints.size() < 200'000 && fuzzed_data_provider.ConsumeBool(), 1000) {
         // construct transaction
         const CTransactionRef tx = [&] {
             CMutableTransaction tx_mut;
@@ -103,8 +103,7 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
         }
 
         // trigger orphanage functions
-        LIMITED_WHILE(fuzzed_data_provider.ConsumeBool(), 1000)
-        {
+        LIMITED_WHILE (fuzzed_data_provider.ConsumeBool(), 1000) {
             NodeId peer_id = fuzzed_data_provider.ConsumeIntegral<NodeId>();
             const auto total_bytes_start{orphanage->TotalOrphanUsage()};
             const auto total_peer_bytes_start{orphanage->UsageByPeer(peer_id)};
@@ -122,37 +121,34 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
                 },
                 [&] {
                     bool have_tx = orphanage->HaveTx(tx->GetWitnessHash());
+                    bool have_tx_and_peer = orphanage->HaveTxFromPeer(wtxid, peer_id);
                     // AddTx should return false if tx is too big or already have it
                     // tx weight is unknown, we only check when tx is already in orphanage
                     {
                         bool add_tx = orphanage->AddTx(tx, peer_id);
                         // have_tx == true -> add_tx == false
                         Assert(!have_tx || !add_tx);
+                        // have_tx_and_peer == true -> add_tx == false
+                        Assert(!have_tx_and_peer || !add_tx);
+                        // After AddTx, the orphanage may trim itself, so the peer's usage may have gone up or down.
 
                         if (add_tx) {
-                            Assert(orphanage->UsageByPeer(peer_id) == tx_weight + total_peer_bytes_start);
-                            Assert(orphanage->TotalOrphanUsage() == tx_weight + total_bytes_start);
                             Assert(tx_weight <= MAX_STANDARD_TX_WEIGHT);
                         } else {
                             // Peer may have been added as an announcer.
-                            if (orphanage->UsageByPeer(peer_id) == tx_weight + total_peer_bytes_start) {
+                            if (orphanage->UsageByPeer(peer_id) > total_peer_bytes_start) {
                                 Assert(orphanage->HaveTxFromPeer(wtxid, peer_id));
-                            } else {
-                                // Otherwise, there must not be any change to the peer byte count.
-                                Assert(orphanage->UsageByPeer(peer_id) == total_peer_bytes_start);
                             }
 
-                            // Regardless, total bytes should not have changed.
-                            Assert(orphanage->TotalOrphanUsage() == total_bytes_start);
+                            // If announcement was added, total bytes does not increase.
+                            // However, if eviction was triggered, the value may decrease.
+                            Assert(orphanage->TotalOrphanUsage() <= total_bytes_start);
                         }
                     }
-                    have_tx = orphanage->HaveTx(tx->GetWitnessHash());
-                    {
-                        bool add_tx = orphanage->AddTx(tx, peer_id);
-                        // if have_tx is still false, it must be too big
-                        Assert(!have_tx == (tx_weight > MAX_STANDARD_TX_WEIGHT));
-                        Assert(!have_tx || !add_tx);
-                    }
+                    // We are not guaranteed to have_tx after AddTx. There are a few possible reasons:
+                    // - tx itself exceeds the per-peer memory usage limit, so LimitOrphans had to remove it immediately
+                    // - tx itself exceeds the per-peer latency score limit, so LimitOrphans had to remove it immediately
+                    // - the orphanage needed trim and all other announcements from this peer are reconsiderable
                 },
                 [&] {
                     bool have_tx = orphanage->HaveTx(tx->GetWitnessHash());
@@ -165,14 +161,9 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
                         // have_tx_and_peer == true -> added_announcer == false
                         Assert(!have_tx_and_peer || !added_announcer);
 
-                        // Total bytes should not have changed. If peer was added as announcer, byte
-                        // accounting must have been updated.
-                        Assert(orphanage->TotalOrphanUsage() == total_bytes_start);
-                        if (added_announcer) {
-                            Assert(orphanage->UsageByPeer(peer_id) == tx_weight + total_peer_bytes_start);
-                        } else {
-                            Assert(orphanage->UsageByPeer(peer_id) == total_peer_bytes_start);
-                        }
+                        // If announcement was added, total bytes does not increase.
+                        // However, if eviction was triggered, the value may decrease.
+                        Assert(orphanage->TotalOrphanUsage() <= total_bytes_start);
                     }
                 },
                 [&] {
@@ -182,15 +173,13 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
                     {
                         auto bytes_from_peer_before{orphanage->UsageByPeer(peer_id)};
                         Assert(have_tx == orphanage->EraseTx(tx->GetWitnessHash()));
-                        if (have_tx) {
-                            Assert(orphanage->TotalOrphanUsage() == total_bytes_start - tx_weight);
-                            if (have_tx_and_peer) {
-                                Assert(orphanage->UsageByPeer(peer_id) == bytes_from_peer_before - tx_weight);
-                            } else {
-                                Assert(orphanage->UsageByPeer(peer_id) == bytes_from_peer_before);
-                            }
+                        // After EraseTx, the orphanage may trim itself, so any peer's usage may decrease.
+                        if (!have_tx) {
+                            Assert(orphanage->UsageByPeer(peer_id) == bytes_from_peer_before);
+                        } else if (have_tx_and_peer) {
+                            Assert(orphanage->UsageByPeer(peer_id) <= bytes_from_peer_before - tx_weight);
                         } else {
-                            Assert(orphanage->TotalOrphanUsage() == total_bytes_start);
+                            Assert(orphanage->UsageByPeer(peer_id) <= bytes_from_peer_before);
                         }
                     }
                     have_tx = orphanage->HaveTx(tx->GetWitnessHash());
@@ -208,9 +197,13 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
                 [&] {
                     // Make a block out of txs and then EraseForBlock
                     CBlock block;
+                    int64_t block_weight{0};
                     int num_txs = fuzzed_data_provider.ConsumeIntegralInRange<unsigned int>(0, 1000);
                     for (int i{0}; i < num_txs; ++i) {
                         auto& tx_to_remove = PickValue(fuzzed_data_provider, tx_history);
+                        const auto tx_weight = GetTransactionWeight(*tx_to_remove);
+                        if (block_weight + tx_weight > MAX_BLOCK_WEIGHT) break;
+                        block_weight += tx_weight;
                         block.vtx.push_back(tx_to_remove);
                     }
                     orphanage->EraseForBlock(block);
@@ -218,13 +211,8 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
                         Assert(!orphanage->HaveTx(tx_removed->GetWitnessHash()));
                         Assert(!orphanage->HaveTxFromPeer(tx_removed->GetWitnessHash(), peer_id));
                     }
-                },
-                [&] {
-                    // test mocktime and expiry
-                    SetMockTime(ConsumeTime(fuzzed_data_provider));
-                    orphanage->LimitOrphans();
-                });
-
+                }
+            );
         }
 
         // Set tx as potential parent to be used for future GetChildren() calls.
@@ -244,7 +232,7 @@ FUZZ_TARGET(txorphan_protected, .init = initialize_orphanage)
     SeedRandomStateForTest(SeedRand::ZEROS);
     FuzzedDataProvider fuzzed_data_provider(buffer.data(), buffer.size());
     FastRandomContext orphanage_rng{ConsumeUInt256(fuzzed_data_provider)};
-    SetMockTime(ConsumeTime(fuzzed_data_provider));
+    FakeNodeClock clock{ConsumeTime(fuzzed_data_provider)};
 
     // We have num_peers peers. Some subset of them will never exceed their reserved weight or announcement count, and
     // should therefore never have any orphans evicted.
@@ -279,8 +267,7 @@ FUZZ_TARGET(txorphan_protected, .init = initialize_orphanage)
     // These are honest peer's live announcements. We expect them to be protected from eviction.
     std::set<Wtxid> protected_wtxids;
 
-    LIMITED_WHILE(outpoints.size() < 400 && fuzzed_data_provider.ConsumeBool(), 1000)
-    {
+    LIMITED_WHILE (outpoints.size() < 400 && fuzzed_data_provider.ConsumeBool(), 1000) {
         // construct transaction
         const CTransactionRef tx = [&] {
             CMutableTransaction tx_mut;
@@ -315,8 +302,7 @@ FUZZ_TARGET(txorphan_protected, .init = initialize_orphanage)
         const auto wtxid{tx->GetWitnessHash()};
 
         // orphanage functions
-        LIMITED_WHILE(fuzzed_data_provider.remaining_bytes(), 10 * global_latency_score_limit)
-        {
+        LIMITED_WHILE (fuzzed_data_provider.remaining_bytes(), 10 * global_latency_score_limit) {
             NodeId peer_id = fuzzed_data_provider.ConsumeIntegralInRange<NodeId>(0, num_peers - 1);
             const auto tx_weight{GetTransactionWeight(*tx)};
 
@@ -345,7 +331,7 @@ FUZZ_TARGET(txorphan_protected, .init = initialize_orphanage)
                     {
                         if (peer_is_protected && !have_tx_and_peer &&
                             (orphanage->UsageByPeer(peer_id) + tx_weight > honest_mem_limit ||
-                            orphanage->LatencyScoreFromPeer(peer_id) + (tx->vin.size()) + 1 > honest_latency_limit)) {
+                            orphanage->LatencyScoreFromPeer(peer_id) + (tx->vin.size() / 10) + 1 > honest_latency_limit)) {
                             // We never want our protected peer oversized
                         } else {
                             orphanage->AddAnnouncer(tx->GetWitnessHash(), peer_id);
@@ -356,7 +342,7 @@ FUZZ_TARGET(txorphan_protected, .init = initialize_orphanage)
                     }
                 },
                 [&] { // EraseTx
-                    if (protected_wtxids.count(tx->GetWitnessHash())) {
+                    if (protected_wtxids.contains(tx->GetWitnessHash())) {
                         protected_wtxids.erase(wtxid);
                     }
                     orphanage->EraseTx(wtxid);
@@ -369,33 +355,8 @@ FUZZ_TARGET(txorphan_protected, .init = initialize_orphanage)
                         Assert(orphanage->LatencyScoreFromPeer(peer_id) == 0);
                         Assert(orphanage->AnnouncementsFromPeer(peer_id) == 0);
                     }
-                },
-                [&] { // LimitOrphans
-                    // Assert that protected peers are never affected by LimitOrphans.
-                    unsigned int protected_count = 0;
-                    unsigned int protected_bytes = 0;
-                    for (unsigned int peer = 0; peer < num_peers; ++peer) {
-                        if (protected_peers[peer]) {
-                            protected_count += orphanage->LatencyScoreFromPeer(peer);
-                            protected_bytes += orphanage->UsageByPeer(peer);
-                        }
-                    }
-                    orphanage->LimitOrphans();
-                    Assert(orphanage->TotalLatencyScore() <= global_latency_score_limit);
-                    Assert(orphanage->TotalOrphanUsage() <= per_peer_weight_reservation * num_peers);
-
-                    // Number of announcements and usage should never differ before and after since
-                    // we've never exceeded the per-peer reservations.
-                    for (unsigned int peer = 0; peer < num_peers; ++peer) {
-                        if (protected_peers[peer]) {
-                            protected_count -= orphanage->LatencyScoreFromPeer(peer);
-                            protected_bytes -= orphanage->UsageByPeer(peer);
-                        }
-                    }
-                    Assert(protected_count == 0);
-                    Assert(protected_bytes == 0);
-                });
-
+                }
+            );
         }
     }
 
@@ -409,7 +370,7 @@ FUZZ_TARGET(txorphan_protected, .init = initialize_orphanage)
 FUZZ_TARGET(txorphanage_sim)
 {
     SeedRandomStateForTest(SeedRand::ZEROS);
-    // This is a comphehensive simulation fuzz test, which runs through a scenario involving up to
+    // This is a comprehensive simulation fuzz test, which runs through a scenario involving up to
     // 16 transactions (which may have simple or complex topology, and may have duplicate txids
     // with distinct wtxids, and up to 16 peers. The scenario is performed both on a real
     // TxOrphanage object and the behavior is compared with a naive reimplementation (just a vector
@@ -512,9 +473,9 @@ FUZZ_TARGET(txorphanage_sim)
     // 3. Initialize real orphanage
     //
 
-    auto max_global_ann = provider.ConsumeIntegralInRange<node::TxOrphanage::Count>(NUM_PEERS, MAX_ANN);
+    auto max_global_latency_score = provider.ConsumeIntegralInRange<node::TxOrphanage::Count>(NUM_PEERS, MAX_ANN);
     auto reserved_peer_usage = provider.ConsumeIntegralInRange<node::TxOrphanage::Usage>(1, total_usage);
-    auto real = node::MakeTxOrphanage(max_global_ann, reserved_peer_usage);
+    auto real = node::MakeTxOrphanage(max_global_latency_score, reserved_peer_usage);
 
     //
     // 4. Functions and data structures for the simulation.
@@ -596,14 +557,14 @@ FUZZ_TARGET(txorphanage_sim)
             count += 1 + (txn[ann.tx]->vin.size() / 10);
             usage += GetTransactionWeight(*txn[ann.tx]);
         }
-        return std::max(FeeFrac{count, max_count}, FeeFrac{usage, max_usage});
+        return std::max<ByRatioNegSize<FeeFrac>>(FeeFrac{count, max_count}, FeeFrac{usage, max_usage});
     };
 
     //
     // 5. Run through a scenario of mutators on both real and simulated orphanage.
     //
 
-    LIMITED_WHILE(provider.remaining_bytes() > 0, 200) {
+    LIMITED_WHILE (provider.remaining_bytes() > 0, 200) {
         int command = provider.ConsumeIntegralInRange<uint8_t>(0, 15);
         while (true) {
             if (sim_announcements.size() < MAX_ANN && command-- == 0) {
@@ -635,7 +596,7 @@ FUZZ_TARGET(txorphanage_sim)
                 assert(erased == sim_have);
                 std::erase_if(sim_announcements, [&](auto& ann) { return ann.tx == tx; });
                 break;
-           } else if (command-- == 0) {
+            } else if (command-- == 0) {
                 // EraseForPeer
                 auto peer = read_peer_fn();
                 real->EraseForPeer(peer);
@@ -658,7 +619,7 @@ FUZZ_TARGET(txorphanage_sim)
                 real->EraseForBlock(block);
                 std::erase_if(sim_announcements, [&](auto& ann) {
                     for (auto& txin : txn[ann.tx]->vin) {
-                        if (spent.count(txin.prevout)) return true;
+                        if (spent.contains(txin.prevout)) return true;
                     }
                     return false;
                 });
@@ -668,11 +629,11 @@ FUZZ_TARGET(txorphanage_sim)
                 auto tx = read_tx_fn();
                 FastRandomContext rand_ctx(rng.rand256());
                 auto added = real->AddChildrenToWorkSet(*txn[tx], rand_ctx);
-                /** Map of all child wtxids, with value whether they already have a reconsiderable
-                    announcement from some peer. */
-                std::map<Wtxid, bool> child_wtxids;
+                /** Set of not-already-reconsiderable child wtxids. */
+                std::set<Wtxid> child_wtxids;
                 for (unsigned child_tx = 0; child_tx < NUM_TX; ++child_tx) {
                     if (!have_tx_fn(child_tx)) continue;
+                    if (have_reconsiderable_fn(child_tx)) continue;
                     bool child_of = false;
                     for (auto& txin : txn[child_tx]->vin) {
                         if (txin.prevout.hash == txn[tx]->GetHash()) {
@@ -681,11 +642,11 @@ FUZZ_TARGET(txorphanage_sim)
                         }
                     }
                     if (child_of) {
-                        child_wtxids[txn[child_tx]->GetWitnessHash()] = have_reconsiderable_fn(child_tx);
+                        child_wtxids.insert(txn[child_tx]->GetWitnessHash());
                     }
                 }
                 for (auto& [wtxid, peer] : added) {
-                    // Wtxid must be a child of tx.
+                    // Wtxid must be a child of tx that is not yet reconsiderable.
                     auto child_wtxid_it = child_wtxids.find(wtxid);
                     assert(child_wtxid_it != child_wtxids.end());
                     // Announcement must exist.
@@ -695,18 +656,13 @@ FUZZ_TARGET(txorphanage_sim)
                     assert(sim_ann_it->reconsider == false);
                     // Make reconsiderable.
                     sim_ann_it->reconsider = true;
-                }
-                for (auto& [wtxid, peer] : added) {
-                    // Remove from child_wtxids map, so we can check that only already-reconsiderable
-                    // ones are missing from the result.
+                    // Remove from child_wtxids map, to disallow it being reported a second time in added.
                     child_wtxids.erase(wtxid);
                 }
                 // Verify that AddChildrenToWorkSet does not select announcements that were already reconsiderable:
                 // Check all child wtxids which did not occur at least once in the result were already reconsiderable
                 // due to a previous AddChildrenToWorkSet.
-                for (auto& [wtxid, already_reconsider] : child_wtxids) {
-                    assert(already_reconsider);
-                }
+                assert(child_wtxids.empty());
                 break;
             } else if (command-- == 0) {
                 // GetTxToReconsider.
@@ -727,59 +683,56 @@ FUZZ_TARGET(txorphanage_sim)
                     assert(!have_reconsider_fn(peer));
                 }
                 break;
-            } else if (command-- == 0) {
-                // LimitOrphans
-                const auto max_ann = max_global_ann / std::max<unsigned>(1, count_peers_fn());
-                const auto max_mem = reserved_peer_usage;
-                while (true) {
-                    // Count global usage and number of peers.
-                    node::TxOrphanage::Usage total_usage{0};
-                    node::TxOrphanage::Count total_latency_score = sim_announcements.size();
-                    for (unsigned tx = 0; tx < NUM_TX; ++tx) {
-                        if (have_tx_fn(tx)) {
-                            total_usage += GetTransactionWeight(*txn[tx]);
-                            total_latency_score += txn[tx]->vin.size() / 10;
-                        }
-                    }
-                    auto num_peers = count_peers_fn();
-                    bool oversized = (total_usage > reserved_peer_usage * num_peers) ||
-                                     (total_latency_score > real->MaxGlobalLatencyScore());
-                    if (!oversized) break;
-                    // Find worst peer.
-                    FeeFrac worst_dos_score{0, 1};
-                    unsigned worst_peer = unsigned(-1);
-                    for (unsigned peer = 0; peer < NUM_PEERS; ++peer) {
-                        auto dos_score = dos_score_fn(peer, max_ann, max_mem);
-                        // Use >= so that the more recent peer (higher NodeId) wins in case of
-                        // ties.
-                        if (dos_score >= worst_dos_score) {
-                            worst_dos_score = dos_score;
-                            worst_peer = peer;
-                        }
-                    }
-                    assert(worst_peer != unsigned(-1));
-                    assert(worst_dos_score >> FeeFrac(1, 1));
-                    // Find oldest announcement from worst_peer, preferring non-reconsiderable ones.
-                    bool done{false};
-                    for (int reconsider = 0; reconsider < 2; ++reconsider) {
-                        for (auto it = sim_announcements.begin(); it != sim_announcements.end(); ++it) {
-                            if (it->announcer != worst_peer || it->reconsider != reconsider) continue;
-                            sim_announcements.erase(it);
-                            done = true;
-                            break;
-                        }
-                        if (done) break;
-                    }
-                    assert(done);
-                }
-                real->LimitOrphans();
-                // We must now be within limits, otherwise LimitOrphans should have continued further).
-                // We don't check the contents of the orphanage until the end to make fuzz runs faster.
-                assert(real->TotalLatencyScore() <= real->MaxGlobalLatencyScore());
-                assert(real->TotalOrphanUsage() <= real->MaxGlobalUsage());
-                break;
             }
         }
+        // Always trim after each command if needed.
+        const auto max_ann = max_global_latency_score / std::max<unsigned>(1, count_peers_fn());
+        const auto max_mem = reserved_peer_usage;
+        while (true) {
+            // Count global usage and number of peers.
+            node::TxOrphanage::Usage total_usage{0};
+            node::TxOrphanage::Count total_latency_score = sim_announcements.size();
+            for (unsigned tx = 0; tx < NUM_TX; ++tx) {
+                if (have_tx_fn(tx)) {
+                    total_usage += GetTransactionWeight(*txn[tx]);
+                    total_latency_score += txn[tx]->vin.size() / 10;
+                }
+            }
+            auto num_peers = count_peers_fn();
+            bool oversized = (total_usage > reserved_peer_usage * num_peers) ||
+                                (total_latency_score > real->MaxGlobalLatencyScore());
+            if (!oversized) break;
+            // Find worst peer.
+            FeeFrac worst_dos_score{0, 1};
+            unsigned worst_peer = unsigned(-1);
+            for (unsigned peer = 0; peer < NUM_PEERS; ++peer) {
+                auto dos_score = dos_score_fn(peer, max_ann, max_mem);
+                // Use >= so that the more recent peer (higher NodeId) wins in case of
+                // ties.
+                if (ByRatioNegSize{dos_score} >= ByRatioNegSize{worst_dos_score}) {
+                    worst_dos_score = dos_score;
+                    worst_peer = peer;
+                }
+            }
+            assert(worst_peer != unsigned(-1));
+            assert(ByRatio{worst_dos_score} > ByRatio{FeeFrac(1, 1)});
+            // Find oldest announcement from worst_peer, preferring non-reconsiderable ones.
+            bool done{false};
+            for (int reconsider = 0; reconsider < 2; ++reconsider) {
+                for (auto it = sim_announcements.begin(); it != sim_announcements.end(); ++it) {
+                    if (it->announcer != worst_peer || it->reconsider != reconsider) continue;
+                    sim_announcements.erase(it);
+                    done = true;
+                    break;
+                }
+                if (done) break;
+            }
+            assert(done);
+        }
+        // We must now be within limits, otherwise LimitOrphans should have continued further.
+        // We don't check the contents of the orphanage until the end to make fuzz runs faster.
+        assert(real->TotalLatencyScore() <= real->MaxGlobalLatencyScore());
+        assert(real->TotalOrphanUsage() <= real->MaxGlobalUsage());
     }
 
     //
@@ -863,12 +816,12 @@ FUZZ_TARGET(txorphanage_sim)
     // CountUniqueOrphans
     assert(unique_orphans == real->CountUniqueOrphans());
     // MaxGlobalLatencyScore
-    assert(max_global_ann == real->MaxGlobalLatencyScore());
+    assert(max_global_latency_score == real->MaxGlobalLatencyScore());
     // ReservedPeerUsage
     assert(reserved_peer_usage == real->ReservedPeerUsage());
     // MaxPeerLatencyScore
     auto present_peers = count_peers_fn();
-    assert(max_global_ann / std::max<unsigned>(1, present_peers) == real->MaxPeerLatencyScore());
+    assert(max_global_latency_score / std::max<unsigned>(1, present_peers) == real->MaxPeerLatencyScore());
     // MaxGlobalUsage
     assert(reserved_peer_usage * std::max<unsigned>(1, present_peers) == real->MaxGlobalUsage());
     // TotalLatencyScore.

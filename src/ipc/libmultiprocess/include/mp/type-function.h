@@ -1,4 +1,4 @@
-// Copyright (c) 2025 The Bitcoin Core developers
+// Copyright (c) The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -24,7 +24,7 @@ template <typename Value, typename FnR, typename... FnParams, typename Output>
 void CustomBuildField(TypeList<std::function<FnR(FnParams...)>>,
     Priority<1>,
     InvokeContext& invoke_context,
-    Value& value,
+    Value&& value,
     Output&& output)
 {
     if (value) {
@@ -48,13 +48,13 @@ struct ProxyCallFn
 };
 
 template <typename FnR, typename... FnParams, typename Input, typename ReadDest>
-decltype(auto) CustomReadField(TypeList<std::function<FnR(FnParams...)>>,
+decltype(auto) CustomReadField(TypeList<std::function<FnR(FnParams...)>> types,
     Priority<1>,
     InvokeContext& invoke_context,
     Input&& input,
     ReadDest&& read_dest)
 {
-    if (input.has()) {
+    if (CustomHasField(types, invoke_context, input)) {
         using Interface = typename Decay<decltype(input.get())>::Calls;
         auto client = std::make_shared<ProxyClient<Interface>>(
             input.get(), &invoke_context.connection, /* destroy_connection= */ false);

@@ -1,6 +1,6 @@
 # macOS Build Guide
 
-**Updated for MacOS [15](https://www.apple.com/macos/macos-sequoia/)**
+**Updated for MacOS [26](https://www.apple.com/os/macos/)**
 
 This guide describes how to build bitcoind, command-line utilities, and GUI on macOS.
 
@@ -16,7 +16,9 @@ macOS comes with a built-in Terminal located in:
 ### 1. Xcode Command Line Tools
 
 The Xcode Command Line Tools are a collection of build tools for macOS.
-These tools must be installed in order to build Bitcoin Core from source.
+Version 16.2 (or higher) of these tools must be
+[installed](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools)
+in order to build Bitcoin Core from source.
 
 To install, run the following command from your terminal:
 
@@ -48,8 +50,21 @@ See [dependencies.md](dependencies.md) for a complete overview.
 To install, run the following from your terminal:
 
 ``` bash
-brew install cmake boost pkgconf libevent
+brew install cmake boost capnp
 ```
+
+#### Wallet Dependencies
+
+If you do not need wallet functionality, you can use `-DENABLE_WALLET=OFF` in
+the `cmake -B` step below.
+
+SQLite is required, but since macOS ships with a useable `sqlite` package, you don't need to
+install anything.
+
+#### IPC Dependencies
+
+If you do not need IPC functionality (see [multiprocess.md](multiprocess.md))
+you can omit `capnp` and use `-DENABLE_IPC=OFF` in the `cmake -B` step below.
 
 ### 4. Clone Bitcoin repository
 
@@ -62,19 +77,6 @@ git clone https://github.com/bitcoin/bitcoin.git
 ```
 
 ### 5. Install Optional Dependencies
-
-#### Wallet Dependencies
-
-It is not necessary to build wallet functionality to run `bitcoind` or  `bitcoin-qt`.
-
-###### Descriptor Wallet Support
-
-`sqlite` is required to support for descriptor wallets.
-
-macOS ships with a useable `sqlite` package, meaning you don't need to
-install anything.
-
----
 
 #### GUI Dependencies
 
@@ -104,29 +106,16 @@ Otherwise, if you don't need QR encoding support, you can pass `-DWITH_QRENCODE=
 
 #### ZMQ Dependencies
 
-Support for ZMQ notifications requires the following dependency.
+Bitcoin Core can provide notifications via ZeroMQ. To compile ZMQ support, install the following dependency and pass `-DWITH_ZMQ=ON` when configuring.
 Skip if you do not need ZMQ functionality.
 
 ``` bash
-brew install zeromq
+brew install zeromq pkgconf
 ```
 
 Check out the [further configuration](#further-configuration) section for more information.
 
 For more information on ZMQ, see: [zmq.md](zmq.md)
-
----
-
-### IPC Dependencies
-
-Compiling IPC-enabled binaries with `-DENABLE_IPC=ON` requires the following dependency.
-Skip if you do not need IPC functionality.
-
-```bash
-brew install capnp
-```
-
-For more information on IPC, see: [multiprocess.md](multiprocess.md).
 
 ---
 
@@ -152,7 +141,7 @@ It is required that you have `python` and `zip` installed.
 
 There are many ways to configure Bitcoin Core, here are a few common examples:
 
-##### Wallet (only SQlite) and GUI Support:
+##### Wallet and GUI:
 
 This enables the GUI.
 If `sqlite` or `qt` are not installed, this will throw an error.
@@ -183,12 +172,12 @@ Run the following in your terminal to compile Bitcoin Core:
 
 ``` bash
 cmake --build build     # Append "-j N" here for N parallel jobs.
-ctest --test-dir build  # Append "-j N" for N parallel tests. Some tests are disabled if Python 3 is not available.
+ctest --test-dir build  # Append "-j N" for N parallel tests.
 ```
 
 ### 3. Deploy (optional)
 
-You can also create a  `.zip` containing the `.app` bundle by running the following command:
+You can also create a `.zip` containing the `.app` bundle by running the following command:
 
 ``` bash
 cmake --build build --target deploy

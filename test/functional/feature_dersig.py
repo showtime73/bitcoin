@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2015-2022 The Bitcoin Core developers
+# Copyright (c) 2015-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test BIP66 (DER SIG).
@@ -9,7 +9,6 @@ Test the DERSIG soft-fork activation on regtest.
 
 from test_framework.blocktools import (
     create_block,
-    create_coinbase,
 )
 from test_framework.messages import msg_block
 from test_framework.p2p import P2PInterface
@@ -84,7 +83,7 @@ class BIP66Test(BitcoinTestFramework):
 
         tip = self.nodes[0].getbestblockhash()
         block_time = self.nodes[0].getblockheader(tip)['mediantime'] + 1
-        block = create_block(int(tip, 16), create_coinbase(DERSIG_HEIGHT - 1), block_time, txlist=[spendtx])
+        block = create_block(int(tip, 16), height=DERSIG_HEIGHT - 1, ntime=block_time, txlist=[spendtx])
         block.solve()
 
         assert_equal(self.nodes[0].getblockcount(), DERSIG_HEIGHT - 2)
@@ -97,7 +96,7 @@ class BIP66Test(BitcoinTestFramework):
         self.log.info("Test that blocks must now be at least version 3")
         tip = block.hash_int
         block_time += 1
-        block = create_block(tip, create_coinbase(DERSIG_HEIGHT), block_time, version=2)
+        block = create_block(tip, height=DERSIG_HEIGHT, ntime=block_time, version=2)
         block.solve()
 
         with self.nodes[0].assert_debug_log(expected_msgs=[f'{block.hash_hex}, bad-version(0x00000002)']):
@@ -121,8 +120,8 @@ class BIP66Test(BitcoinTestFramework):
                 'txid': spendtx_txid,
                 'wtxid': spendtx_wtxid,
                 'allowed': False,
-                'reject-reason': 'mandatory-script-verify-flag-failed (Non-canonical DER signature)',
-                'reject-details': 'mandatory-script-verify-flag-failed (Non-canonical DER signature), ' +
+                'reject-reason': 'mempool-script-verify-flag-failed (Non-canonical DER signature)',
+                'reject-details': 'mempool-script-verify-flag-failed (Non-canonical DER signature), ' +
                                   f"input 0 of {spendtx_txid} (wtxid {spendtx_wtxid}), spending {coin_txid}:0"
             }],
             self.nodes[0].testmempoolaccept(rawtxs=[spendtx.serialize().hex()], maxfeerate=0),
@@ -133,7 +132,7 @@ class BIP66Test(BitcoinTestFramework):
         block.hashMerkleRoot = block.calc_merkle_root()
         block.solve()
 
-        with self.nodes[0].assert_debug_log(expected_msgs=['Block validation error: mandatory-script-verify-flag-failed (Non-canonical DER signature)']):
+        with self.nodes[0].assert_debug_log(expected_msgs=['Block validation error: block-script-verify-flag-failed (Non-canonical DER signature)']):
             peer.send_and_ping(msg_block(block))
             assert_equal(int(self.nodes[0].getbestblockhash(), 16), tip)
             peer.sync_with_ping()

@@ -8,9 +8,11 @@ $(1)_ar=$$($$($(1)_type)_AR)
 $(1)_ranlib=$$($$($(1)_type)_RANLIB)
 $(1)_nm=$$($$($(1)_type)_NM)
 $(1)_cflags=$$($$($(1)_type)_CFLAGS) \
-            $$($$($(1)_type)_$$(release_type)_CFLAGS)
+            $$($$($(1)_type)_$$(release_type)_CFLAGS) \
+            -pipe -std=$(C_STANDARD)
 $(1)_cxxflags=$$($$($(1)_type)_CXXFLAGS) \
-              $$($$($(1)_type)_$$(release_type)_CXXFLAGS)
+              $$($$($(1)_type)_$$(release_type)_CXXFLAGS) \
+              -pipe -std=$(CXX_STANDARD)
 $(1)_ldflags=$$($$($(1)_type)_LDFLAGS) \
              $$($$($(1)_type)_$$(release_type)_LDFLAGS) \
              -L$$($($(1)_type)_prefix)/lib
@@ -34,9 +36,8 @@ define fetch_file_inner
 endef
 
 define fetch_file
-    ( test -f $$($(1)_source_dir)/$(4) || \
     ( $(call fetch_file_inner,$(1),$(2),$(3),$(4),$(5)) || \
-      $(call fetch_file_inner,$(1),$(FALLBACK_DOWNLOAD_PATH),$(3),$(4),$(5))))
+      $(call fetch_file_inner,$(1),$(FALLBACK_DOWNLOAD_PATH),$(4),$(4),$(5)))
 endef
 
 # Shell script to create a source tarball in $(1)_source from local directory
@@ -46,7 +47,11 @@ endef
 define fetch_local_dir_sha256
     if ! [ -f $($(1)_source) ] || [ -n "$$(find $($(1)_local_dir) -newer $($(1)_source) | head -n1)" ]; then \
         mkdir -p $(dir $($(1)_source)) && \
-        $(build_TAR) -c -f $($(1)_source) -C $($(1)_local_dir) . && \
+        ( \
+          cd $($(1)_local_dir) && \
+          find . -print0 | TZ=UTC xargs -0r $(build_TOUCH) && \
+          find . | LC_ALL=C sort | $(build_TAR) --no-recursion -c -f $($(1)_source) -T - \
+        ) && \
         rm -f $($(1)_fetched); \
     fi && \
     if ! [ -f $($(1)_fetched) ] || [ -n "$$(find $($(1)_source) -newer $($(1)_fetched))" ]; then \
@@ -59,7 +64,7 @@ endef
 
 define int_get_build_recipe_hash
 $(eval $(1)_patches_path?=$(PATCHES_PATH)/$(1))
-$(eval $(1)_all_file_checksums:=$(shell $(build_SHA256SUM) $(meta_depends) packages/$(1).mk $(addprefix $($(1)_patches_path)/,$($(1)_patches)) | cut -d" " -f1))
+$(eval $(1)_all_file_checksums:=$(shell $(build_SHA256SUM) $(meta_depends) packages/$(1).mk $$(grep "^include " packages/$(1).mk | cut -d' ' -f2 | xargs) $(addprefix $($(1)_patches_path)/,$($(1)_patches)) | cut -d" " -f1))
 # If $(1)_local_dir is set, create a tarball of the local directory contents to
 # use as the source of the package, and include a hash of the tarball in the
 # package id, so if directory contents change, the package and packages
@@ -221,7 +226,7 @@ $(1)_cmake=env CC="$$($(1)_cc)" \
                -DCMAKE_AR=`which $$($(1)_ar)` \
                -DCMAKE_NM=`which $$($(1)_nm)` \
                -DCMAKE_RANLIB=`which $$($(1)_ranlib)` \
-               -DCMAKE_INSTALL_LIBDIR=lib/ \
+               -DCMAKE_INSTALL_LIBDIR=lib \
                -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
                -DCMAKE_VERBOSE_MAKEFILE:BOOL=$(V) \
                -DCMAKE_EXPORT_NO_PACKAGE_REGISTRY:BOOL=TRUE \
@@ -245,7 +250,6 @@ endif
 $($(1)_fetched):
 	mkdir -p $$(@D) $(SOURCES_PATH)
 	rm -f $$@
-	touch $$@
 	cd $$(@D); $($(1)_fetch_cmds)
 	cd $($(1)_source_dir); $(foreach source,$($(1)_all_sources),$(build_SHA256SUM) $(source) >> $$(@);)
 	touch $$@

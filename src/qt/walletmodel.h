@@ -1,4 +1,4 @@
-// Copyright (c) 2011-2022 The Bitcoin Core developers
+// Copyright (c) 2011-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -10,8 +10,8 @@
 #include <qt/walletmodeltransaction.h>
 
 #include <interfaces/wallet.h>
+#include <primitives/transaction_identifier.h>
 #include <support/allocators/secure.h>
-#include <util/transaction_identifier.h>
 
 #include <vector>
 
@@ -59,7 +59,6 @@ public:
         InvalidAmount,
         InvalidAddress,
         AmountExceedsBalance,
-        AmountWithFeeExceedsBalance,
         DuplicateAddress,
         TransactionCreationFailed, // Error returned when wallet is still locked
         AbsurdFee
@@ -68,9 +67,9 @@ public:
     enum EncryptionStatus
     {
         NoKeys,       // wallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS)
-        Unencrypted,  // !wallet->IsCrypted()
-        Locked,       // wallet->IsCrypted() && wallet->IsLocked()
-        Unlocked      // wallet->IsCrypted() && !wallet->IsLocked()
+        Unencrypted,  // !wallet->HasEncryptionKeys()
+        Locked,       // wallet->HasEncryptionKeys() && wallet->IsLocked()
+        Unlocked      // wallet->HasEncryptionKeys() && !wallet->IsLocked()
     };
 
     OptionsModel* getOptionsModel() const;
@@ -103,9 +102,7 @@ public:
 
     // Wallet encryption
     bool setWalletEncrypted(const SecureString& passphrase);
-    // Passphrase only needed when unlocking
-    bool setWalletLocked(bool locked, const SecureString &passPhrase=SecureString());
-    bool changePassphrase(const SecureString &oldPass, const SecureString &newPass);
+    util::Expected<void, wallet::WalletError> changePassphrase(const SecureString& oldPass, const SecureString& newPass);
 
     // RAII object for unlocking wallet, returned by requestUnlock()
     class UnlockContext

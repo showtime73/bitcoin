@@ -2,7 +2,7 @@
 #
 # linearize-data.py: Construct a linear, no-fork version of the chain.
 #
-# Copyright (c) 2013-2022 The Bitcoin Core developers
+# Copyright (c) 2013-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #
@@ -34,7 +34,7 @@ def get_blk_dt(blk_hdr):
 # When getting the list of block hashes, undo any byte reversals.
 def get_block_hashes(settings):
     blkindex = []
-    with open(settings['hashlist'], "r", encoding="utf8") as f:
+    with open(settings['hashlist'], "r") as f:
         for line in f:
             line = line.rstrip()
             if settings['rev_hash_bytes'] == 'true':
@@ -134,6 +134,7 @@ class BlockDataCopier:
     def writeBlock(self, inhdr, blk_hdr, rawblock):
         blockSizeOnDisk = len(inhdr) + len(blk_hdr) + len(rawblock)
         if not self.fileOutput and ((self.outsz + blockSizeOnDisk) > self.maxOutSz):
+            os.ftruncate(self.outF.fileno(), self.outF.tell())
             self.outF.close()
             if self.setFileTime:
                 os.utime(self.outFname, (int(time.time()), self.highTS))
@@ -147,6 +148,7 @@ class BlockDataCopier:
             print("New month " + blkDate.strftime("%Y-%m") + " @ " + self.hash_str)
             self.lastDate = blkDate
             if self.outF:
+                os.ftruncate(self.outF.fileno(), self.outF.tell())
                 self.outF.close()
                 if self.setFileTime:
                     os.utime(self.outFname, (int(time.time()), self.highTS))
@@ -161,7 +163,10 @@ class BlockDataCopier:
             else:
                 self.outFname = os.path.join(self.settings['output'], "blk%05d.dat" % self.outFn)
             print("Output file " + self.outFname)
-            self.outF = open(self.outFname, "wb")
+            try:
+                self.outF = open(self.outFname, "xb+")
+            except FileExistsError:
+                self.outF = open(self.outFname, "rb+")
 
         self.outF.write(inhdr)
         self.outF.write(blk_hdr)
@@ -229,7 +234,7 @@ class BlockDataCopier:
             inExtent = BlockExtent(self.inFn, self.inF.tell(), inhdr, blk_hdr, inLen)
 
             self.hash_str = calc_hash_str(blk_hdr)
-            if not self.hash_str in blkmap:
+            if self.hash_str not in blkmap:
                 # Because blocks can be written to files out-of-order as of 0.10, the script
                 # may encounter blocks it doesn't know about. Treat as debug output.
                 if settings['debug_output'] == 'true':
@@ -267,7 +272,7 @@ if __name__ == '__main__':
         print("Usage: linearize-data.py CONFIG-FILE")
         sys.exit(1)
 
-    with open(sys.argv[1], encoding="utf8") as f:
+    with open(sys.argv[1]) as f:
         for line in f:
             # skip comment lines
             m = re.search(r'^\s*#', line)
@@ -320,7 +325,7 @@ if __name__ == '__main__':
     blkmap = mkblockmap(blkindex)
 
     # Block hash map won't be byte-reversed. Neither should the genesis hash.
-    if not settings['genesis'] in blkmap:
+    if settings['genesis'] not in blkmap:
         print("Genesis block not found in hashlist")
     else:
         BlockDataCopier(settings, blkindex, blkmap).run()

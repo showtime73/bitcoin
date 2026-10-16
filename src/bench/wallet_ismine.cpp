@@ -1,4 +1,4 @@
-// Copyright (c) 2022 The Bitcoin Core developers
+// Copyright (c) 2022-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -11,18 +11,19 @@
 #include <script/signingprovider.h>
 #include <sync.h>
 #include <test/util/setup_common.h>
+#include <util/check.h>
 #include <wallet/context.h>
 #include <wallet/db.h>
+#include <wallet/sqlite.h>
 #include <wallet/test/util.h>
-#include <wallet/types.h>
 #include <wallet/wallet.h>
 #include <wallet/walletutil.h>
 
-#include <cassert>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace wallet {
 static void WalletIsMine(benchmark::Bench& bench, int num_combo = 0)
@@ -36,8 +37,8 @@ static void WalletIsMine(benchmark::Bench& bench, int num_combo = 0)
     // Setup the wallet
     // Loading the wallet will also create it
     uint64_t create_flags = WALLET_FLAG_DESCRIPTORS;
-    auto database = CreateMockableWalletDatabase();
-    auto wallet = TestLoadWallet(std::move(database), context, create_flags);
+    auto database = MakeInMemoryWalletDatabase();
+    auto wallet = TestCreateWallet(std::move(database), context, create_flags);
 
     // For a descriptor wallet, fill with num_combo combo descriptors with random keys
     // This benchmarks a non-HD wallet migrated to descriptors
@@ -58,8 +59,8 @@ static void WalletIsMine(benchmark::Bench& bench, int num_combo = 0)
 
     bench.run([&] {
         LOCK(wallet->cs_wallet);
-        isminetype mine = wallet->IsMine(script);
-        assert(mine == ISMINE_NO);
+        bool mine = wallet->IsMine(script);
+        assert(!mine);
     });
 
     TestUnloadWallet(std::move(wallet));
@@ -67,6 +68,6 @@ static void WalletIsMine(benchmark::Bench& bench, int num_combo = 0)
 
 static void WalletIsMineDescriptors(benchmark::Bench& bench) { WalletIsMine(bench); }
 static void WalletIsMineMigratedDescriptors(benchmark::Bench& bench) { WalletIsMine(bench, /*num_combo=*/2000); }
-BENCHMARK(WalletIsMineDescriptors, benchmark::PriorityLevel::LOW);
-BENCHMARK(WalletIsMineMigratedDescriptors, benchmark::PriorityLevel::LOW);
+BENCHMARK(WalletIsMineDescriptors);
+BENCHMARK(WalletIsMineMigratedDescriptors);
 } // namespace wallet

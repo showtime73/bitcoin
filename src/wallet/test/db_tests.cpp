@@ -4,6 +4,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <test/util/common.h>
 #include <test/util/setup_common.h>
 #include <util/check.h>
 #include <util/fs.h>
@@ -14,7 +15,6 @@
 #include <wallet/walletutil.h>
 
 #include <cstddef>
-#include <fstream>
 #include <memory>
 #include <span>
 #include <string>
@@ -295,6 +295,15 @@ BOOST_AUTO_TEST_CASE(concurrent_txn_dont_interfere)
     BOOST_CHECK(handler->Write(key, value2, /*fOverwrite=*/true));
     BOOST_CHECK(handler2->Read(key, read_value));
     BOOST_CHECK_EQUAL(read_value, value2);
+}
+
+BOOST_AUTO_TEST_CASE(in_memory_database_cannot_reopen)
+{
+    // Reopening an in-memory database would create a fresh empty connection,
+    // silently losing all data. Open() must throw instead.
+    InMemoryWalletDatabase database;
+    database.Close();
+    BOOST_CHECK_THROW(database.Open(), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

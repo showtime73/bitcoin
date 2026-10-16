@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2018-2022 The Bitcoin Core developers
+# Copyright (c) 2018-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test transaction time during old block rescanning
@@ -146,6 +146,10 @@ class TransactionTimeRescanTest(BitcoinTestFramework):
             ]
         )
         assert_equal(all([r["success"] for r in import_res]), True)
+
+        self.log.info('Testing abortrescan when no rescan is in progress')
+        assert_equal(restorewo_wallet.getwalletinfo()['scanning'], False)
+        assert_equal(restorewo_wallet.abortrescan(), False)
 
         # check user has 0 balance and no transactions
         assert_equal(restorewo_wallet.getbalance(), 0)

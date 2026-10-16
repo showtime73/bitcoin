@@ -1,4 +1,4 @@
-// Copyright (c) 2022 The Bitcoin Core developers
+// Copyright (c) 2022-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -7,8 +7,10 @@
 #include <consensus/amount.h>
 #include <outputtype.h>
 #include <primitives/transaction.h>
+#include <script/script.h>
 #include <test/util/setup_common.h>
 #include <util/check.h>
+#include <util/translation.h>
 #include <wallet/context.h>
 #include <wallet/db.h>
 #include <wallet/test/util.h>
@@ -16,8 +18,12 @@
 #include <wallet/wallet.h>
 #include <wallet/walletutil.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -42,27 +48,34 @@ static void WalletLoadingDescriptors(benchmark::Bench& bench)
     // Setup the wallet
     // Loading the wallet will also create it
     uint64_t create_flags = WALLET_FLAG_DESCRIPTORS;
-    auto database = CreateMockableWalletDatabase();
-    auto wallet = TestLoadWallet(std::move(database), context, create_flags);
+    DatabaseStatus status;
+    DatabaseOptions options;
+    options.require_format = DatabaseFormat::SQLITE;
+    options.require_create = true;
+    bilingual_str error;
+    auto database = MakeWalletDatabase("", options, status, error);
+    auto wallet = TestCreateWallet(std::move(database), context, create_flags);
 
     // Generate a bunch of transactions and addresses to put into the wallet
     for (int i = 0; i < 1000; ++i) {
         AddTx(*wallet);
     }
 
-    database = DuplicateMockDatabase(wallet->GetDatabase());
+    options.require_create = false;
+    options.require_existing = true;
 
-    // reload the wallet for the actual benchmark
+    bench.epochs(std::min(bench.epochs(), size_t{5}))
+        .setup([&] {
+            TestUnloadWallet(std::move(wallet));
+            database = MakeWalletDatabase("", options, status, error);
+        })
+        .run([&] {
+            wallet = TestLoadWallet(std::move(database), context);
+        });
+
+    // Cleanup
     TestUnloadWallet(std::move(wallet));
-
-    bench.epochs(5).run([&] {
-        wallet = TestLoadWallet(std::move(database), context, create_flags);
-
-        // Cleanup
-        database = DuplicateMockDatabase(wallet->GetDatabase());
-        TestUnloadWallet(std::move(wallet));
-    });
 }
 
-BENCHMARK(WalletLoadingDescriptors, benchmark::PriorityLevel::HIGH);
+BENCHMARK(WalletLoadingDescriptors);
 } // namespace wallet

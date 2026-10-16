@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2016-2022 The Bitcoin Core developers
+# Copyright (c) 2016-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test segwit transactions and blocks on P2P network."""
@@ -10,7 +10,6 @@ from test_framework.blocktools import (
     WITNESS_COMMITMENT_HEADER,
     add_witness_commitment,
     create_block,
-    create_coinbase,
 )
 from test_framework.messages import (
     MAX_BIP125_RBF_SEQUENCE,
@@ -30,6 +29,7 @@ from test_framework.messages import (
     MSG_WTX,
     NODE_NETWORK,
     NODE_WITNESS,
+    WITNESS_SCALE_FACTOR,
     msg_no_witness_block,
     msg_getdata,
     msg_headers,
@@ -82,6 +82,7 @@ from test_framework.script_util import (
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_not_equal,
+    assert_greater_than_or_equal,
     assert_equal,
     assert_raises_rpc_error,
     ensure_for,
@@ -229,7 +230,7 @@ class SegWitTest(BitcoinTestFramework):
         tip = self.nodes[0].getbestblockhash()
         height = self.nodes[0].getblockcount() + 1
         block_time = self.nodes[0].getblockheader(tip)["mediantime"] + 1
-        block = create_block(int(tip, 16), create_coinbase(height), block_time)
+        block = create_block(int(tip, 16), height=height, ntime=block_time)
         return block
 
     def update_witness_block_with_transactions(self, block, tx_list, nonce=0):
@@ -373,14 +374,14 @@ class SegWitTest(BitcoinTestFramework):
         self.test_node.send_without_ping(msg_headers())
 
         self.test_node.announce_block_and_wait_for_getdata(block1, use_header=False)
-        assert self.test_node.last_message["getdata"].inv[0].type == blocktype
+        assert_equal(self.test_node.last_message["getdata"].inv[0].type, blocktype)
         test_witness_block(self.nodes[0], self.test_node, block1, True)
 
         block2 = self.build_next_block()
         block2.solve()
 
         self.test_node.announce_block_and_wait_for_getdata(block2, use_header=True)
-        assert self.test_node.last_message["getdata"].inv[0].type == blocktype
+        assert_equal(self.test_node.last_message["getdata"].inv[0].type, blocktype)
         test_witness_block(self.nodes[0], self.test_node, block2, True)
 
         # Check that we can getdata for witness blocks or regular blocks,
@@ -409,8 +410,8 @@ class SegWitTest(BitcoinTestFramework):
             block = self.build_next_block()
             self.update_witness_block_with_transactions(block, [])
             # This gives us a witness commitment.
-            assert len(block.vtx[0].wit.vtxinwit) == 1
-            assert len(block.vtx[0].wit.vtxinwit[0].scriptWitness.stack) == 1
+            assert_equal(len(block.vtx[0].wit.vtxinwit), 1)
+            assert_equal(len(block.vtx[0].wit.vtxinwit[0].scriptWitness.stack), 1)
             test_witness_block(self.nodes[0], self.test_node, block, accepted=True)
             # Now try to retrieve it...
             rpc_block = self.nodes[0].getblock(block.hash_hex, False)
@@ -505,7 +506,7 @@ class SegWitTest(BitcoinTestFramework):
             # invalid (transactions are always validated with SCRIPT_VERIFY_WITNESS so a segwit v0 transaction
             # without a witness is invalid).
             test_witness_block(self.nodes[0], self.test_node, block, accepted=False, with_witness=False,
-                               reason='mandatory-script-verify-flag-failed (Witness program was passed an empty witness)')
+                               reason='block-script-verify-flag-failed (Witness program was passed an empty witness)')
 
         self.utxo.pop(0)
         self.utxo.append(UTXO(txid, 2, value))
@@ -528,7 +529,7 @@ class SegWitTest(BitcoinTestFramework):
         # Verify that if a peer doesn't set nServices to include NODE_WITNESS,
         # the getdata is just for the non-witness portion.
         self.old_node.announce_tx_and_wait_for_getdata(tx)
-        assert self.old_node.last_message["getdata"].inv[0].type == MSG_TX
+        assert_equal(self.old_node.last_message["getdata"].inv[0].type, MSG_TX)
 
         # Since we haven't delivered the tx yet, inv'ing the same tx from
         # a witness transaction ought not result in a getdata.
@@ -615,7 +616,9 @@ class SegWitTest(BitcoinTestFramework):
                     'txid': tx3.txid_hex,
                     'wtxid': tx3.wtxid_hex,
                     'allowed': True,
+                    'vsize_adjusted': tx3.get_vsize(),
                     'vsize': tx3.get_vsize(),
+                    'vsize_bip141': tx3.get_vsize(),
                     'fees': {
                         'base': Decimal('0.00001000'),
                     },
@@ -633,7 +636,9 @@ class SegWitTest(BitcoinTestFramework):
                     'txid': tx3.txid_hex,
                     'wtxid': tx3.wtxid_hex,
                     'allowed': True,
+                    'vsize_adjusted': tx3.get_vsize(),
                     'vsize': tx3.get_vsize(),
+                    'vsize_bip141': tx3.get_vsize(),
                     'fees': {
                         'base': Decimal('0.00011000'),
                     },
@@ -690,13 +695,19 @@ class SegWitTest(BitcoinTestFramework):
         # segwit activation.  Note that older bitcoind's that are not
         # segwit-aware would also reject this for failing CLEANSTACK.
         with self.nodes[0].assert_debug_log(
-                expected_msgs=[spend_tx.txid_hex, 'was not accepted: mandatory-script-verify-flag-failed (Witness program was passed an empty witness)']):
+                expected_msgs=[spend_tx.txid_hex, 'was not accepted: mempool-script-verify-flag-failed (Witness program was passed an empty witness)']):
+            test_transaction_acceptance(self.nodes[0], self.test_node, spend_tx, with_witness=False, accepted=False)
+
+        # The transaction was detected as witness stripped above and not added to the reject
+        # filter. Trying again will check it again and result in the same error.
+        with self.nodes[0].assert_debug_log(
+                expected_msgs=[spend_tx.txid_hex, 'was not accepted: mempool-script-verify-flag-failed (Witness program was passed an empty witness)']):
             test_transaction_acceptance(self.nodes[0], self.test_node, spend_tx, with_witness=False, accepted=False)
 
         # Try to put the witness script in the scriptSig, should also fail.
         spend_tx.vin[0].scriptSig = CScript([p2wsh_pubkey, b'a'])
         with self.nodes[0].assert_debug_log(
-                expected_msgs=[spend_tx.txid_hex, 'was not accepted: mandatory-script-verify-flag-failed (Script evaluated without error but finished with a false/empty top stack element)']):
+                expected_msgs=[spend_tx.txid_hex, 'was not accepted: mempool-script-verify-flag-failed (Script evaluated without error but finished with a false/empty top stack element)']):
             test_transaction_acceptance(self.nodes[0], self.test_node, spend_tx, with_witness=False, accepted=False)
 
         # Now put the witness script in the witness, should succeed after
@@ -783,7 +794,7 @@ class SegWitTest(BitcoinTestFramework):
         block_3.vtx[0].vout[0].nValue -= 1
         block_3.vtx[0].vout[-1].nValue += 1
         block_3.hashMerkleRoot = block_3.calc_merkle_root()
-        assert len(block_3.vtx[0].vout) == 4  # 3 OP_returns
+        assert_equal(len(block_3.vtx[0].vout), 4)  # 3 OP_returns
         block_3.solve()
         test_witness_block(self.nodes[0], self.test_node, block_3, accepted=True)
 
@@ -816,7 +827,6 @@ class SegWitTest(BitcoinTestFramework):
         assert block.get_weight() > MAX_BLOCK_WEIGHT
 
         # We can't send over the p2p network, because this is too big to relay
-        # TODO: repeat this test with a block that can be relayed
         assert_equal('bad-witness-nonce-size', self.nodes[0].submitblock(block.serialize().hex()))
 
         assert_not_equal(self.nodes[0].getbestblockhash(), block.hash_hex)
@@ -825,7 +835,37 @@ class SegWitTest(BitcoinTestFramework):
         assert block.get_weight() < MAX_BLOCK_WEIGHT
         assert_equal(None, self.nodes[0].submitblock(block.serialize().hex()))
 
-        assert self.nodes[0].getbestblockhash() == block.hash_hex
+        assert_equal(self.nodes[0].getbestblockhash(), block.hash_hex)
+
+        # Build a relayable-but-invalid block
+        relayable_block = self.build_next_block()
+        add_witness_commitment(relayable_block)
+        relayable_block.solve()
+
+        # Append extra witness data to the coinbase input that triggers the
+        # same validation rejection but keeps the block under the weight limit
+        # so it can be sent via P2P.
+        relayable_block.vtx[0].wit.vtxinwit[0].scriptWitness.stack.append(b'a' * 100_000)
+
+        # Ensure it's relayable by weight
+        assert_greater_than_or_equal(MAX_BLOCK_WEIGHT, relayable_block.get_weight())
+
+        # Send over P2P and expect rejection for the same reason
+        test_witness_block(self.nodes[0], self.test_node, relayable_block,
+                           accepted=False, reason='bad-witness-nonce-size')
+
+        # Node should still be on the previous tip
+        assert_not_equal(self.nodes[0].getbestblockhash(), relayable_block.hash_hex)
+
+        # Now fix the block by removing the extra witness data
+        relayable_block.vtx[0].wit.vtxinwit[0].scriptWitness.stack.pop()
+
+        # Confirm the block is still relayable by weight
+        assert relayable_block.get_weight() <= MAX_BLOCK_WEIGHT
+
+        # Send the corrected block and expect acceptance
+        test_witness_block(self.nodes[0], self.test_node, relayable_block, accepted=True)
+        assert_equal(self.nodes[0].getbestblockhash(), relayable_block.hash_hex)
 
         # Now make sure that malleating the witness reserved value doesn't
         # result in a block permanently marked bad.
@@ -907,7 +947,7 @@ class SegWitTest(BitcoinTestFramework):
         block.vtx[0].vout.pop()
         add_witness_commitment(block)
         block.solve()
-        assert block.get_weight() == MAX_BLOCK_WEIGHT
+        assert_equal(block.get_weight(), MAX_BLOCK_WEIGHT)
 
         test_witness_block(self.nodes[0], self.test_node, block, accepted=True)
 
@@ -971,7 +1011,7 @@ class SegWitTest(BitcoinTestFramework):
 
         # Extra witness data should not be allowed.
         test_witness_block(self.nodes[0], self.test_node, block, accepted=False,
-                           reason='mandatory-script-verify-flag-failed (Witness provided for non-witness script)')
+                           reason='block-script-verify-flag-failed (Witness provided for non-witness script)')
 
         # Try extra signature data.  Ok if we're not spending a witness output.
         block.vtx[1].wit.vtxinwit = []
@@ -996,7 +1036,7 @@ class SegWitTest(BitcoinTestFramework):
 
         # This has extra witness data, so it should fail.
         test_witness_block(self.nodes[0], self.test_node, block, accepted=False,
-                           reason='mandatory-script-verify-flag-failed (Stack size must be exactly one after execution)')
+                           reason='block-script-verify-flag-failed (Stack size must be exactly one after execution)')
 
         # Now get rid of the extra witness, but add extra scriptSig data
         tx2.vin[0].scriptSig = CScript([OP_TRUE])
@@ -1008,7 +1048,7 @@ class SegWitTest(BitcoinTestFramework):
 
         # This has extra signature data for a witness input, so it should fail.
         test_witness_block(self.nodes[0], self.test_node, block, accepted=False,
-                           reason='mandatory-script-verify-flag-failed (Witness requires empty scriptSig)')
+                           reason='block-script-verify-flag-failed (Witness requires empty scriptSig)')
 
         # Now get rid of the extra scriptsig on the witness input, and verify
         # success (even with extra scriptsig data in the non-witness input)
@@ -1044,7 +1084,7 @@ class SegWitTest(BitcoinTestFramework):
 
         self.update_witness_block_with_transactions(block, [tx, tx2])
         test_witness_block(self.nodes[0], self.test_node, block, accepted=False,
-                           reason='mandatory-script-verify-flag-failed (Push value size limit exceeded)')
+                           reason='block-script-verify-flag-failed (Push value size limit exceeded)')
 
         # Now reduce the length of the stack element
         tx2.wit.vtxinwit[0].scriptWitness.stack[0] = b'a' * (MAX_SCRIPT_ELEMENT_SIZE)
@@ -1065,7 +1105,7 @@ class SegWitTest(BitcoinTestFramework):
 
         # This script is 19 max pushes (9937 bytes), then 64 more opcode-bytes.
         long_witness_script = CScript([b'a' * MAX_SCRIPT_ELEMENT_SIZE] * 19 + [OP_DROP] * 63 + [OP_TRUE])
-        assert len(long_witness_script) == MAX_WITNESS_SCRIPT_LENGTH + 1
+        assert_equal(len(long_witness_script), MAX_WITNESS_SCRIPT_LENGTH + 1)
         long_script_pubkey = script_to_p2wsh_script(long_witness_script)
 
         block = self.build_next_block()
@@ -1083,11 +1123,11 @@ class SegWitTest(BitcoinTestFramework):
         self.update_witness_block_with_transactions(block, [tx, tx2])
 
         test_witness_block(self.nodes[0], self.test_node, block, accepted=False,
-                           reason='mandatory-script-verify-flag-failed (Script is too big)')
+                           reason='block-script-verify-flag-failed (Script is too big)')
 
         # Try again with one less byte in the witness script
         witness_script = CScript([b'a' * MAX_SCRIPT_ELEMENT_SIZE] * 19 + [OP_DROP] * 62 + [OP_TRUE])
-        assert len(witness_script) == MAX_WITNESS_SCRIPT_LENGTH
+        assert_equal(len(witness_script), MAX_WITNESS_SCRIPT_LENGTH)
         script_pubkey = script_to_p2wsh_script(witness_script)
 
         tx.vout[0] = CTxOut(tx.vout[0].nValue, script_pubkey)
@@ -1162,8 +1202,8 @@ class SegWitTest(BitcoinTestFramework):
         block.vtx = [block.vtx[0]]
         self.update_witness_block_with_transactions(block, [tx2])
         # This block doesn't result in a specific reject reason, but an iostream exception:
-        # "Exception 'CDataStream::read(): end of data: unspecified iostream_category error' (...) caught"
-        test_witness_block(self.nodes[0], self.test_node, block, accepted=False)
+        with self.nodes[0].assert_debug_log(["Exception 'DataStream::read(): end of data"]):
+            test_witness_block(self.nodes[0], self.test_node, block, accepted=False)
 
         # Now make one of the intermediate witnesses be incorrect
         tx2.wit.vtxinwit.append(CTxInWitness())
@@ -1173,7 +1213,7 @@ class SegWitTest(BitcoinTestFramework):
         block.vtx = [block.vtx[0]]
         self.update_witness_block_with_transactions(block, [tx2])
         test_witness_block(self.nodes[0], self.test_node, block, accepted=False,
-                           reason='mandatory-script-verify-flag-failed (Operation not valid with the current stack size)')
+                           reason='block-script-verify-flag-failed (Operation not valid with the current stack size)')
 
         # Fix the broken witness and the block should be accepted.
         tx2.wit.vtxinwit[5].scriptWitness.stack = [b'a', witness_script]
@@ -1245,6 +1285,13 @@ class SegWitTest(BitcoinTestFramework):
         test_transaction_acceptance(self.nodes[0], self.test_node, tx2, with_witness=True, accepted=True)
         test_transaction_acceptance(self.nodes[0], self.test_node, tx3, with_witness=True, accepted=False)
 
+        # Now do the opposite: strip the witness entirely. This will be detected as witness stripping and
+        # the (w)txid won't be added to the reject filter: we can try again and get the same error.
+        tx3.wit.vtxinwit[0].scriptWitness.stack = []
+        reason = "was not accepted: mempool-script-verify-flag-failed (Witness program was passed an empty witness)"
+        test_transaction_acceptance(self.nodes[0], self.test_node, tx3, with_witness=False, accepted=False, reason=reason)
+        test_transaction_acceptance(self.nodes[0], self.test_node, tx3, with_witness=False, accepted=False, reason=reason)
+
         # Get rid of the extra witness, and verify acceptance.
         tx3.wit.vtxinwit[0].scriptWitness.stack = [witness_script]
         # Also check that old_node gets a tx announcement, even though this is
@@ -1315,7 +1362,7 @@ class SegWitTest(BitcoinTestFramework):
             temp_utxo.append(UTXO(tx.txid_int, 0, tx.vout[0].nValue))
 
         self.generate(self.nodes[0], 1)  # Mine all the transactions
-        assert len(self.nodes[0].getrawmempool()) == 0
+        assert_equal(len(self.nodes[0].getrawmempool()), 0)
 
         # Finally, verify that version 0 -> version 2 transactions
         # are standard
@@ -1434,7 +1481,7 @@ class SegWitTest(BitcoinTestFramework):
         sign_input_segwitv0(tx2, 0, script, tx.vout[0].nValue, key)
 
         # Should fail policy test.
-        test_transaction_acceptance(self.nodes[0], self.test_node, tx2, True, False, 'non-mandatory-script-verify-flag (Using non-compressed keys in segwit)')
+        test_transaction_acceptance(self.nodes[0], self.test_node, tx2, True, False, 'mempool-script-verify-flag-failed (Using non-compressed keys in segwit)')
         # But passes consensus.
         block = self.build_next_block()
         self.update_witness_block_with_transactions(block, [tx2])
@@ -1453,7 +1500,7 @@ class SegWitTest(BitcoinTestFramework):
         sign_p2pk_witness_input(witness_script, tx3, 0, SIGHASH_ALL, tx2.vout[0].nValue, key)
 
         # Should fail policy test.
-        test_transaction_acceptance(self.nodes[0], self.test_node, tx3, True, False, 'non-mandatory-script-verify-flag (Using non-compressed keys in segwit)')
+        test_transaction_acceptance(self.nodes[0], self.test_node, tx3, True, False, 'mempool-script-verify-flag-failed (Using non-compressed keys in segwit)')
         # But passes consensus.
         block = self.build_next_block()
         self.update_witness_block_with_transactions(block, [tx3])
@@ -1470,7 +1517,7 @@ class SegWitTest(BitcoinTestFramework):
         sign_p2pk_witness_input(witness_script, tx4, 0, SIGHASH_ALL, tx3.vout[0].nValue, key)
 
         # Should fail policy test.
-        test_transaction_acceptance(self.nodes[0], self.test_node, tx4, True, False, 'non-mandatory-script-verify-flag (Using non-compressed keys in segwit)')
+        test_transaction_acceptance(self.nodes[0], self.test_node, tx4, True, False, 'mempool-script-verify-flag-failed (Using non-compressed keys in segwit)')
         block = self.build_next_block()
         self.update_witness_block_with_transactions(block, [tx4])
         test_witness_block(self.nodes[0], self.test_node, block, accepted=True)
@@ -1522,7 +1569,7 @@ class SegWitTest(BitcoinTestFramework):
                 sign_p2pk_witness_input(witness_script, tx, 0, hashtype, prev_utxo.nValue + 1, key)
                 self.update_witness_block_with_transactions(block, [tx])
                 test_witness_block(self.nodes[0], self.test_node, block, accepted=False,
-                                   reason='mandatory-script-verify-flag-failed (Script evaluated without error '
+                                   reason='block-script-verify-flag-failed (Script evaluated without error '
                                           'but finished with a false/empty top stack element')
 
                 # Too-small input value
@@ -1530,7 +1577,7 @@ class SegWitTest(BitcoinTestFramework):
                 block.vtx.pop()  # remove last tx
                 self.update_witness_block_with_transactions(block, [tx])
                 test_witness_block(self.nodes[0], self.test_node, block, accepted=False,
-                                   reason='mandatory-script-verify-flag-failed (Script evaluated without error '
+                                   reason='block-script-verify-flag-failed (Script evaluated without error '
                                           'but finished with a false/empty top stack element')
 
                 # Now try correct value
@@ -1634,7 +1681,7 @@ class SegWitTest(BitcoinTestFramework):
         block = self.build_next_block()
         self.update_witness_block_with_transactions(block, [tx, tx2])
         test_witness_block(self.nodes[0], self.test_node, block, accepted=False,
-                           reason='mandatory-script-verify-flag-failed (Witness requires empty scriptSig)')
+                           reason='block-script-verify-flag-failed (Witness requires empty scriptSig)')
 
         # Move the signature to the witness.
         block.vtx.pop()
@@ -1826,6 +1873,7 @@ class SegWitTest(BitcoinTestFramework):
         # sig ops
         outputs = (MAX_SIGOP_COST // sigops_per_script) + 2
         extra_sigops_available = MAX_SIGOP_COST % sigops_per_script
+        p2sh_outputs = MAX_SIGOP_COST // (sigops_per_script * WITNESS_SCALE_FACTOR) + 1
 
         # We chose the number of checkmultisigs/checksigs to make this work:
         assert extra_sigops_available < 100  # steer clear of MAX_OPS_PER_SCRIPT
@@ -1849,6 +1897,7 @@ class SegWitTest(BitcoinTestFramework):
             tx.vout.append(CTxOut(split_value, script_pubkey))
         tx.vout[-2].scriptPubKey = script_pubkey_toomany
         tx.vout[-1].scriptPubKey = script_pubkey_justright
+        tx.vout += [CTxOut(0, script_to_p2sh_script(witness_script)) for _ in range(p2sh_outputs)]
 
         block_1 = self.build_next_block()
         self.update_witness_block_with_transactions(block_1, [tx])
@@ -1877,7 +1926,7 @@ class SegWitTest(BitcoinTestFramework):
         tx2.vout.append(CTxOut(0, script_pubkey_checksigs))
         tx2.vin.pop()
         tx2.wit.vtxinwit.pop()
-        tx2.vout[0].nValue -= tx.vout[-2].nValue
+        tx2.vout[0].nValue -= tx.vout[outputs - 2].nValue
         block_3 = self.build_next_block()
         self.update_witness_block_with_transactions(block_3, [tx2])
         test_witness_block(self.nodes[0], self.test_node, block_3, accepted=False, reason='bad-blk-sigops')
@@ -1903,7 +1952,20 @@ class SegWitTest(BitcoinTestFramework):
         self.update_witness_block_with_transactions(block_5, [tx2])
         test_witness_block(self.nodes[0], self.test_node, block_5, accepted=True)
 
-        # TODO: test p2sh sigop counting
+        p2sh_tx = CTransaction()
+        p2sh_tx.vin = [CTxIn(COutPoint(tx.txid_int, outputs + i), CScript([witness_script])) for i in range(p2sh_outputs)]
+        p2sh_tx.vout.append(CTxOut(0, CScript([OP_TRUE])))
+        block_6 = self.build_next_block()
+        self.update_witness_block_with_transactions(block_6, [p2sh_tx])
+        test_witness_block(self.nodes[0], self.test_node, block_6, accepted=False, reason='bad-blk-sigops')
+
+        # Add witness data to verify that the transaction's P2SH sigops are still counted.
+        p2sh_tx.vin.append(CTxIn(COutPoint(tx.txid_int, outputs - 2), b""))
+        p2sh_tx.wit.vtxinwit = [CTxInWitness() for _ in p2sh_tx.vin]
+        p2sh_tx.wit.vtxinwit[-1].scriptWitness.stack = [witness_script_toomany]
+        block_7 = self.build_next_block()
+        self.update_witness_block_with_transactions(block_7, [p2sh_tx])
+        test_witness_block(self.nodes[0], self.test_node, block_7, accepted=False, reason='bad-blk-sigops')
 
         # Cleanup and prep for next test
         self.utxo.pop(0)

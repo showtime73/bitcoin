@@ -11,7 +11,9 @@
 
 #include <any>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class JSONRPCRequest;
@@ -19,13 +21,12 @@ class UniValue;
 struct bilingual_str;
 
 namespace wallet {
-class LegacyScriptPubKeyMan;
 enum class DatabaseStatus;
 struct WalletContext;
 
 extern const std::string HELP_REQUIRING_PASSPHRASE;
 
-static const RPCResult RESULT_LAST_PROCESSED_BLOCK { RPCResult::Type::OBJ, "lastprocessedblock", "hash and height of the block this information was generated on",{
+inline const RPCResult RESULT_LAST_PROCESSED_BLOCK { RPCResult::Type::OBJ, "lastprocessedblock", "hash and height of the block this information was generated on",{
     {RPCResult::Type::STR_HEX, "hash", "hash of the block this information was generated on"},
     {RPCResult::Type::NUM, "height", "height of the block this information was generated on"}}
 };
@@ -37,7 +38,12 @@ static const RPCResult RESULT_LAST_PROCESSED_BLOCK { RPCResult::Type::OBJ, "last
  * @return nullptr if no wallet should be used, or a pointer to the CWallet
  */
 std::shared_ptr<CWallet> GetWalletForJSONRPCRequest(const JSONRPCRequest& request);
-bool GetWalletNameFromJSONRPCRequest(const JSONRPCRequest& request, std::string& wallet_name);
+std::optional<std::string> GetWalletNameFromJSONRPCRequest(const JSONRPCRequest& request);
+/**
+ * Ensures that a wallet name is specified across the endpoint and wallet_name.
+ * Throws `RPC_INVALID_PARAMETER` if none or different wallet names are specified.
+ */
+std::string EnsureUniqueWalletName(const JSONRPCRequest& request, std::optional<std::string_view> wallet_name);
 
 void EnsureWalletIsUnlocked(const CWallet&);
 WalletContext& EnsureWalletContext(const std::any& context);
@@ -47,7 +53,8 @@ std::string LabelFromValue(const UniValue& value);
 //! Fetch parent descriptors of this scriptPubKey.
 void PushParentDescriptors(const CWallet& wallet, const CScript& script_pubkey, UniValue& entry);
 
-void HandleWalletError(const std::shared_ptr<CWallet> wallet, DatabaseStatus& status, bilingual_str& error);
+void HandleWalletError(const std::shared_ptr<CWallet>& wallet, DatabaseStatus& status, bilingual_str& error);
+RPCErrorCode HandleWalletErrorCode(WalletErrorCode code);
 void AppendLastProcessedBlock(UniValue& entry, const CWallet& wallet) EXCLUSIVE_LOCKS_REQUIRED(wallet.cs_wallet);
 } //  namespace wallet
 

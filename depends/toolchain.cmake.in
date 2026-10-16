@@ -117,7 +117,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND NOT CMAKE_HOST_APPLE)
 endif()
 
 
-if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD)$")
+if(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD|OpenBSD)$")
   # Customize pkg-config behavior for finding dependencies
   # of the xcb QPA platform plugin:
   # 1. Restrict search paths to the depends.
@@ -163,13 +163,15 @@ if("@usdt_packages@" MATCHES "^[ ]*$")
   set(WITH_USDT OFF CACHE BOOL "")
 else()
   set(WITH_USDT ON CACHE BOOL "")
+  set(USDT_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/systemtap/include" CACHE PATH "")
 endif()
 
-if("@multiprocess@" STREQUAL "1")
+set(ipc_packages @ipc_packages@)
+if("${ipc_packages}" STREQUAL "")
+  set(ENABLE_IPC OFF CACHE BOOL "")
+else()
   set(ENABLE_IPC ON CACHE BOOL "")
   set(MPGEN_EXECUTABLE "${CMAKE_CURRENT_LIST_DIR}/native/bin/mpgen" CACHE FILEPATH "")
   set(CAPNP_EXECUTABLE "${CMAKE_CURRENT_LIST_DIR}/native/bin/capnp" CACHE FILEPATH "")
   set(CAPNPC_CXX_EXECUTABLE "${CMAKE_CURRENT_LIST_DIR}/native/bin/capnpc-c++" CACHE FILEPATH "")
-else()
-  set(ENABLE_IPC OFF CACHE BOOL "")
 endif()

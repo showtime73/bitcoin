@@ -72,19 +72,19 @@ ShowUninstDetails show
 Section -Main SEC0000
     SetOutPath $INSTDIR
     SetOverwrite on
-    File @abs_top_builddir@/release/@BITCOIN_GUI_NAME@@EXEEXT@
-    File @abs_top_builddir@/release/@BITCOIN_WRAPPER_NAME@@EXEEXT@
-    File /oname=COPYING.txt @abs_top_srcdir@/COPYING
-    File /oname=readme.txt @abs_top_srcdir@/doc/README_windows.txt
-    File @abs_top_srcdir@/share/examples/bitcoin.conf
+    File "@BIN_DIR@/@BITCOIN_GUI_NAME@@EXEEXT@"
+    File "@BIN_DIR@/@BITCOIN_WRAPPER_NAME@@EXEEXT@"
+    File /oname=COPYING.txt "@abs_top_srcdir@/COPYING"
+    File /oname=readme.txt "@abs_top_srcdir@/doc/README_windows.txt"
+    File "@abs_top_srcdir@/share/examples/bitcoin.conf"
     SetOutPath $INSTDIR\share\rpcauth
-    File @abs_top_srcdir@/share/rpcauth/*.*
+    File "@abs_top_srcdir@/share/rpcauth/*.*"
     SetOutPath $INSTDIR\daemon
-    File @abs_top_builddir@/release/@BITCOIN_DAEMON_NAME@@EXEEXT@
-    File @abs_top_builddir@/release/@BITCOIN_CLI_NAME@@EXEEXT@
-    File @abs_top_builddir@/release/@BITCOIN_TX_NAME@@EXEEXT@
-    File @abs_top_builddir@/release/@BITCOIN_WALLET_TOOL_NAME@@EXEEXT@
-    File @abs_top_builddir@/release/@BITCOIN_TEST_NAME@@EXEEXT@
+    File "@BIN_DIR@/@BITCOIN_DAEMON_NAME@@EXEEXT@"
+    File "@BIN_DIR@/@BITCOIN_CLI_NAME@@EXEEXT@"
+    File "@BIN_DIR@/@BITCOIN_TX_NAME@@EXEEXT@"
+    File "@BIN_DIR@/@BITCOIN_WALLET_TOOL_NAME@@EXEEXT@"
+    File "@LIBEXEC_DIR@/@BITCOIN_TEST_NAME@@EXEEXT@"
     SetOutPath $INSTDIR
     WriteRegStr HKCU "${REGKEY}\Components" Main 1
 SectionEnd
@@ -113,6 +113,19 @@ Section -post SEC0001
     WriteRegStr HKCR "@CLIENT_TARNAME@" "" "URL:Bitcoin"
     WriteRegStr HKCR "@CLIENT_TARNAME@\DefaultIcon" "" $INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@
     WriteRegStr HKCR "@CLIENT_TARNAME@\shell\open\command" "" '"$INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@" "%1"'
+
+    # Lingering since fb2b05b1259d3e69e6e675adfa30b429424c7625 which removed the suffix
+    DeleteRegValue HKCU "${REGKEY} (64-bit)\Components" Main
+    DeleteRegKey HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name) (64-bit)"
+    Delete /REBOOTOK "$SMPROGRAMS\$StartMenuGroup\Uninstall $(^Name) (64-bit).lnk"
+    Delete /REBOOTOK "$SMPROGRAMS\$StartMenuGroup\$(^Name) (64-bit).lnk"
+    DeleteRegValue HKCU "${REGKEY} (64-bit)" StartMenuGroup
+    DeleteRegValue HKCU "${REGKEY} (64-bit)" Path
+    DeleteRegKey /IfEmpty HKCU "${REGKEY} (64-bit)\Components"
+    DeleteRegKey /IfEmpty HKCU "${REGKEY} (64-bit)"
+
+    # Lingering since 77b2923f87131a407f7d4193c54db22375130403
+    Delete /REBOOTOK "$SMPROGRAMS\$StartMenuGroup\Bitcoin Core (testnet, 64-bit).lnk"
 SectionEnd
 
 # Macro for selecting uninstaller sections

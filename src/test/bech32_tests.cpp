@@ -1,10 +1,10 @@
 // Copyright (c) 2017 Pieter Wuille
-// Copyright (c) 2021 The Bitcoin Core developers
+// Copyright (c) 2021-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <bech32.h>
-#include <test/util/str.h>
+#include <util/strencodings.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -71,6 +71,7 @@ BOOST_AUTO_TEST_CASE(bech32_testvectors_invalid)
         "A12uEL5L",
         "abcdef1qpzrz9x8gf2tvdw0s3jn54khce6mua7lmqqqxw",
         "test1zg69w7y6hn0aqy352euf40x77qddq3dc",
+        std::string(100, 'q'),
     };
     static const std::pair<std::string, std::vector<int>> ERRORS[] = {
         {"Invalid character or mixed case", {0}},
@@ -89,6 +90,7 @@ BOOST_AUTO_TEST_CASE(bech32_testvectors_invalid)
         {"Invalid character or mixed case", {3}},
         {"Invalid Bech32 checksum", {11}},
         {"Invalid Bech32 checksum", {9, 16}},
+        {"Bech32 string too long", {90}},
     };
     static_assert(std::size(CASES) == std::size(ERRORS), "Bech32 CASES and ERRORS should have the same length");
 

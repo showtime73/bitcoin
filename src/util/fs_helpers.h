@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2023 The Bitcoin Core developers
+// Copyright (c) 2009-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -10,9 +10,27 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <iosfwd>
+#include <ios>
 #include <limits>
 #include <optional>
+#include <string>
+
+#ifdef __APPLE__
+enum class FSType {
+    EXFAT,
+    OTHER,
+    ERROR
+};
+
+/**
+ * Detect filesystem type for a given path.
+ * Currently identifies exFAT filesystems which cause issues on macOS.
+ *
+ * @param[in] path The directory path to check
+ * @return FSType enum indicating the filesystem type
+ */
+FSType GetFilesystemType(const fs::path& path);
+#endif
 
 /**
  * Ensure file contents are fully committed to disk, using a platform-specific
@@ -27,7 +45,18 @@ bool FileCommit(FILE* file);
 void DirectoryCommit(const fs::path& dirname);
 
 bool TruncateFile(FILE* file, unsigned int length);
-int RaiseFileDescriptorLimit(int nMinFD);
+
+/**
+ * Try to raise the file descriptor limit to the requested number.
+ *
+ * @param[in] min_fd  The requested minimum number of file descriptors.
+ * @returns           The actual file descriptor limit. It may be lower or
+ *                    higher than min_fd. Returns std::numeric_limits<int>::max()
+ *                    if the OS imposes no limit (RLIM_INFINITY).
+ *
+ */
+int RaiseFileDescriptorLimit(int min_fd);
+
 void AllocateFileRange(FILE* file, unsigned int offset, unsigned int length);
 
 /**
@@ -75,6 +104,14 @@ std::string PermsToSymbolicString(fs::perms p);
  * @return Permissions as fs::perms
  */
 std::optional<fs::perms> InterpretPermString(const std::string& s);
+
+/** Check if a directory is writable by creating a temporary file on it.
+ *
+ * @param[in] dir_path Path of the directory to test
+ * @return true if a temporary file could be created and removed, false otherwise.
+ * @throw std::runtime_error if dir_path is not a directory.
+ */
+bool IsDirWritable(const fs::path& dir_path);
 
 #ifdef WIN32
 fs::path GetSpecialFolderPath(int nFolder, bool fCreate = true);

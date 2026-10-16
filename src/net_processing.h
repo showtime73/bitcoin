@@ -9,8 +9,11 @@
 #include <consensus/amount.h>
 #include <net.h>
 #include <node/txorphanage.h>
+#include <node/types.h>
+#include <private_broadcast.h>
 #include <protocol.h>
-#include <threadsafety.h>
+#include <uint256.h>
+#include <util/expected.h>
 #include <validationinterface.h>
 
 #include <atomic>
@@ -35,25 +38,30 @@ class Warnings;
 } // namespace node
 
 /** Whether transaction reconciliation protocol should be enabled by default. */
-static constexpr bool DEFAULT_TXRECONCILIATION_ENABLE{false};
+inline constexpr bool DEFAULT_TXRECONCILIATION_ENABLE{false};
 /** Default number of non-mempool transactions to keep around for block reconstruction. Includes
     orphan, replaced, and rejected transactions. */
-static const uint32_t DEFAULT_BLOCK_RECONSTRUCTION_EXTRA_TXN{100};
-static const bool DEFAULT_PEERBLOOMFILTERS = false;
-static const bool DEFAULT_PEERBLOCKFILTERS = false;
+inline constexpr uint32_t DEFAULT_BLOCK_RECONSTRUCTION_EXTRA_TXN{100};
+/** Default maximum per-second rate for sending transaction inventory to peers. */
+inline constexpr unsigned int DEFAULT_TX_SEND_RATE{14};
+inline constexpr bool DEFAULT_PEERBLOOMFILTERS = false;
+inline constexpr bool DEFAULT_PEERBLOCKFILTERS = false;
 /** Maximum number of outstanding CMPCTBLOCK requests for the same block. */
-static const unsigned int MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK = 3;
+inline constexpr unsigned int MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK = 3;
 /** Number of headers sent in one getheaders result. We rely on the assumption that if a peer sends
  *  less than this number, we reached its tip. Changing this value is a protocol upgrade. */
-static const unsigned int MAX_HEADERS_RESULTS = 2000;
+inline constexpr unsigned int MAX_HEADERS_RESULTS = 2000;
+/** The compactblocks version we support. See BIP 152. */
+inline constexpr uint64_t CMPCTBLOCKS_VERSION{2};
 
 struct CNodeStateStats {
     int nSyncHeight = -1;
     int nCommonHeight = -1;
-    int m_starting_height = -1;
-    std::chrono::microseconds m_ping_wait;
+    NodeClock::duration m_ping_wait;
     std::vector<int> vHeightInFlight;
     bool m_relay_txs;
+    int m_inv_to_send = 0;
+    uint64_t m_last_inv_seq{0};
     CAmount m_fee_filter_received;
     uint64_t m_addr_processed = 0;
     uint64_t m_addr_rate_limited = 0;
@@ -61,11 +69,22 @@ struct CNodeStateStats {
     ServiceFlags their_services;
     int64_t presync_height{-1};
     std::chrono::seconds time_offset{0};
+    NodeClock::time_point m_last_block_announcement;
 };
 
 struct PeerManagerInfo {
+    struct InvBucketInfo {
+        size_t backlog_count{0};
+        double count_bucket{0};
+        double size_bucket{0};
+    };
+
     std::chrono::seconds median_outbound_time_offset{0s};
     bool ignores_incoming_txs{false};
+    bool private_broadcast{DEFAULT_PRIVATE_BROADCAST};
+    unsigned int tx_send_rate{0};
+    InvBucketInfo inbound_bucket;
+    InvBucketInfo outbound_bucket;
 };
 
 class PeerManager : public CValidationInterface, public NetEventsInterface
@@ -87,6 +106,10 @@ public:
         //! Number of headers sent in one getheaders message result (this is
         //! a test-only option).
         uint32_t max_headers_result{MAX_HEADERS_RESULTS};
+        //! Whether private broadcast is used for sending transactions.
+        bool private_broadcast{DEFAULT_PRIVATE_BROADCAST};
+        //! Maximum per-second rate for sending transaction inventory to peers.
+        unsigned int tx_send_rate{DEFAULT_TX_SEND_RATE};
     };
 
     static std::unique_ptr<PeerManager> make(CConnman& connman, AddrMan& addrman,
@@ -99,9 +122,8 @@ public:
      *
      * @param[in]  peer_id      The peer id
      * @param[in]  block_index  The blockindex
-     * @returns std::nullopt if a request was successfully made, otherwise an error message
      */
-    virtual std::optional<std::string> FetchBlock(NodeId peer_id, const CBlockIndex& block_index) = 0;
+    virtual util::Expected<void, std::string> FetchBlock(NodeId peer_id, const CBlockIndex& block_index) = 0;
 
     /** Begin running background tasks, should only be called once */
     virtual void StartScheduledTasks(CScheduler& scheduler) = 0;
@@ -109,13 +131,41 @@ public:
     /** Get statistics from node state */
     virtual bool GetNodeStateStats(NodeId nodeid, CNodeStateStats& stats) const = 0;
 
-    virtual std::vector<node::TxOrphanage::OrphanTxBase> GetOrphanTransactions() = 0;
+    virtual std::vector<node::TxOrphanage::OrphanInfo> GetOrphanTransactions() = 0;
 
     /** Get peer manager info. */
     virtual PeerManagerInfo GetInfo() const = 0;
 
-    /** Relay transaction to all peers. */
-    virtual void RelayTransaction(const Txid& txid, const Wtxid& wtxid) = 0;
+    /** Get info about transactions currently being privately broadcast. */
+    virtual std::vector<PrivateBroadcast::TxBroadcastInfo> GetPrivateBroadcastInfo() const = 0;
+
+    /**
+     * Abort private broadcast attempts for transactions currently being privately broadcast.
+     *
+     * @param[in] id A transaction identifier. It will be matched against both txid and wtxid for
+     *               all transactions in the private broadcast queue.
+     *
+     * @return Transactions removed from the private broadcast queue. If the provided id matches a
+     *         txid that corresponds to multiple transactions with different wtxids, multiple
+     *         transactions may be returned.
+     */
+    virtual std::vector<CTransactionRef> AbortPrivateBroadcast(const uint256& id) = 0;
+
+    /**
+     * Initiate a transaction broadcast to eligible peers.
+     * Queue the witness transaction id to the inbound and outbound inv backlogs.
+     * Later, depending on `-txsendrate`, `Peer::TxRelay::m_next_inv_send_time` and if
+     * the transaction is in the mempool, an `INV` about it may be sent to the peer.
+     */
+    virtual void InitiateTxBroadcastToAll(const Wtxid& wtxid) = 0;
+
+    /**
+     * Initiate a private transaction broadcast. This is done
+     * asynchronously via short-lived connections to peers on privacy networks.
+     * @retval node::TransactionError::OK The transaction is scheduled for private broadcast (or was already scheduled).
+     * @retval node::TransactionError::PRIVATE_BROADCAST_FULL Rejected because the private broadcast queue is full.
+     */
+    [[nodiscard]] virtual node::TransactionError InitiateTxBroadcastPrivate(const CTransactionRef& tx) = 0;
 
     /** Send ping message to all peers */
     virtual void SendPings() = 0;
@@ -132,12 +182,8 @@ public:
      */
     virtual void CheckForStaleTipAndEvictPeers() = 0;
 
-    /** Process a single message from a peer. Public for fuzz testing */
-    virtual void ProcessMessage(CNode& pfrom, const std::string& msg_type, DataStream& vRecv,
-                                const std::chrono::microseconds time_received, const std::atomic<bool>& interruptMsgProc) EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) = 0;
-
     /** This function is used for testing the stale tip eviction logic, see denialofservice_tests.cpp */
-    virtual void UpdateLastBlockAnnounceTime(NodeId node, int64_t time_in_seconds) = 0;
+    virtual void UpdateLastBlockAnnounceTime(NodeId node, NodeClock::time_point time) = 0;
 
     /**
      * Gets the set of service flags which are "desirable" for a given peer.

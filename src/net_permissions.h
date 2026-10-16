@@ -1,4 +1,4 @@
-// Copyright (c) 2009-2022 The Bitcoin Core developers
+// Copyright (c) 2009-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -17,9 +17,9 @@ struct bilingual_str;
 extern const std::vector<std::string> NET_PERMISSIONS_DOC;
 
 /** Default for -whitelistrelay. */
-constexpr bool DEFAULT_WHITELISTRELAY = true;
+inline constexpr bool DEFAULT_WHITELISTRELAY = true;
 /** Default for -whitelistforcerelay. */
-constexpr bool DEFAULT_WHITELISTFORCERELAY = false;
+inline constexpr bool DEFAULT_WHITELISTFORCERELAY = false;
 
 enum class NetPermissionFlags : uint32_t {
     None = 0,
@@ -46,7 +46,7 @@ enum class NetPermissionFlags : uint32_t {
     Implicit = (1U << 31),
     All = BloomFilter | ForceRelay | Relay | NoBan | Mempool | Download | Addr,
 };
-static inline constexpr NetPermissionFlags operator|(NetPermissionFlags a, NetPermissionFlags b)
+constexpr NetPermissionFlags operator|(NetPermissionFlags a, NetPermissionFlags b)
 {
     using t = std::underlying_type_t<NetPermissionFlags>;
     return static_cast<NetPermissionFlags>(static_cast<t>(a) | static_cast<t>(b));

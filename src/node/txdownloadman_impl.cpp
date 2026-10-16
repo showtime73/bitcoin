@@ -7,8 +7,8 @@
 
 #include <chain.h>
 #include <consensus/validation.h>
-#include <logging.h>
 #include <txmempool.h>
+#include <util/log.h>
 #include <validation.h>
 #include <validationinterface.h>
 
@@ -83,7 +83,7 @@ void TxDownloadManager::CheckIsEmpty(NodeId nodeid) const
 {
     m_impl->CheckIsEmpty(nodeid);
 }
-std::vector<TxOrphanage::OrphanTxBase> TxDownloadManager::GetOrphanTransactions() const
+std::vector<TxOrphanage::OrphanInfo> TxDownloadManager::GetOrphanTransactions() const
 {
     return m_impl->GetOrphanTransactions();
 }
@@ -100,12 +100,15 @@ void TxDownloadManagerImpl::BlockConnected(const std::shared_ptr<const CBlock>& 
     m_orphanage->EraseForBlock(*pblock);
 
     for (const auto& ptx : pblock->vtx) {
+        // Reconsider potential child transactions.
+        m_orphanage->AddChildrenToWorkSet(*ptx, m_rng);
+
         RecentConfirmedTransactionsFilter().insert(ptx->GetHash().ToUint256());
         if (ptx->HasWitness()) {
             RecentConfirmedTransactionsFilter().insert(ptx->GetWitnessHash().ToUint256());
         }
-        m_txrequest.ForgetTxHash(ptx->GetHash());
-        m_txrequest.ForgetTxHash(ptx->GetWitnessHash());
+        m_txrequest.ForgetTxHash(ptx->GetHash().ToUint256());
+        m_txrequest.ForgetTxHash(ptx->GetWitnessHash().ToUint256());
     }
 }
 
@@ -143,7 +146,7 @@ bool TxDownloadManagerImpl::AlreadyHaveTx(const GenTxid& gtxid, bool include_rec
 
     if (RecentConfirmedTransactionsFilter().contains(hash)) return true;
 
-    return RecentRejectsFilter().contains(hash) || std::visit([&](const auto& id) { return m_opts.m_mempool.exists(id); }, gtxid);
+    return RecentRejectsFilter().contains(hash) || std::visit([&](const auto& id) { return m_mempool.exists(id); }, gtxid);
 }
 
 void TxDownloadManagerImpl::ConnectedPeer(NodeId nodeid, const TxDownloadConnectionInfo& info)
@@ -188,7 +191,6 @@ bool TxDownloadManagerImpl::AddTxAnnouncement(NodeId peer, const GenTxid& gtxid,
 
             if (MaybeAddOrphanResolutionCandidate(unique_parents, *wtxid, peer, now)) {
                 m_orphanage->AddAnnouncer(orphan_tx->GetWitnessHash(), peer);
-                m_orphanage->LimitOrphans();
             }
 
             // Return even if the peer isn't an orphan resolution candidate. This would be caught by AlreadyHaveTx.
@@ -325,10 +327,10 @@ void TxDownloadManagerImpl::MempoolAcceptedTx(const CTransactionRef& tx)
 {
     // As this version of the transaction was acceptable, we can forget about any requests for it.
     // No-op if the tx is not in txrequest.
-    m_txrequest.ForgetTxHash(tx->GetHash());
-    m_txrequest.ForgetTxHash(tx->GetWitnessHash());
+    m_txrequest.ForgetTxHash(tx->GetHash().ToUint256());
+    m_txrequest.ForgetTxHash(tx->GetWitnessHash().ToUint256());
 
-    m_orphanage->AddChildrenToWorkSet(*tx, m_opts.m_rng);
+    m_orphanage->AddChildrenToWorkSet(*tx, m_rng);
     // If it came from the orphanage, remove it. No-op if the tx is not in txorphanage.
     m_orphanage->EraseTx(tx->GetWitnessHash());
 }
@@ -378,7 +380,7 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
                     fRejectedParents = true;
                     break;
                 } else if (RecentRejectsReconsiderableFilter().contains(parent_txid.ToUint256()) &&
-                           !m_opts.m_mempool.exists(parent_txid)) {
+                           !m_mempool.exists(parent_txid)) {
                     // More than 1 parent in m_lazy_recent_rejects_reconsiderable: 1p1c will not be
                     // sufficient to accept this package, so just give up here.
                     if (rejected_parent_reconsiderable.has_value()) {
@@ -407,8 +409,8 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
                 //
                 // Search by txid and, if the tx has a witness, wtxid
                 std::vector<NodeId> orphan_resolution_candidates{nodeid};
-                m_txrequest.GetCandidatePeers(ptx->GetHash(), orphan_resolution_candidates);
-                if (ptx->HasWitness()) m_txrequest.GetCandidatePeers(ptx->GetWitnessHash(), orphan_resolution_candidates);
+                m_txrequest.GetCandidatePeers(ptx->GetHash().ToUint256(), orphan_resolution_candidates);
+                if (ptx->HasWitness()) m_txrequest.GetCandidatePeers(ptx->GetWitnessHash().ToUint256(), orphan_resolution_candidates);
 
                 for (const auto& nodeid : orphan_resolution_candidates) {
                     if (MaybeAddOrphanResolutionCandidate(unique_parents, ptx->GetWitnessHash(), nodeid, now)) {
@@ -417,11 +419,8 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
                 }
 
                 // Once added to the orphan pool, a tx is considered AlreadyHave, and we shouldn't request it anymore.
-                m_txrequest.ForgetTxHash(tx.GetHash());
-                m_txrequest.ForgetTxHash(tx.GetWitnessHash());
-
-                // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
-                m_orphanage->LimitOrphans();
+                m_txrequest.ForgetTxHash(tx.GetHash().ToUint256());
+                m_txrequest.ForgetTxHash(tx.GetWitnessHash().ToUint256());
             } else {
                 unique_parents.clear();
                 LogDebug(BCLog::MEMPOOL, "not keeping orphan with rejected parents %s (wtxid=%s)\n",
@@ -435,8 +434,8 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
                 // from any of our non-wtxidrelay peers.
                 RecentRejectsFilter().insert(tx.GetHash().ToUint256());
                 RecentRejectsFilter().insert(tx.GetWitnessHash().ToUint256());
-                m_txrequest.ForgetTxHash(tx.GetHash());
-                m_txrequest.ForgetTxHash(tx.GetWitnessHash());
+                m_txrequest.ForgetTxHash(tx.GetHash().ToUint256());
+                m_txrequest.ForgetTxHash(tx.GetWitnessHash().ToUint256());
             }
         }
     } else if (state.GetResult() == TxValidationResult::TX_WITNESS_STRIPPED) {
@@ -471,7 +470,7 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
         } else {
             RecentRejectsFilter().insert(ptx->GetWitnessHash().ToUint256());
         }
-        m_txrequest.ForgetTxHash(ptx->GetWitnessHash());
+        m_txrequest.ForgetTxHash(ptx->GetWitnessHash().ToUint256());
         // If the transaction failed for TX_INPUTS_NOT_STANDARD,
         // then we know that the witness was irrelevant to the policy
         // failure, since this check depends only on the txid
@@ -484,7 +483,7 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
         // rolling bloom filter.
         if (state.GetResult() == TxValidationResult::TX_INPUTS_NOT_STANDARD && ptx->HasWitness()) {
             RecentRejectsFilter().insert(ptx->GetHash().ToUint256());
-            m_txrequest.ForgetTxHash(ptx->GetHash());
+            m_txrequest.ForgetTxHash(ptx->GetHash().ToUint256());
         }
     }
 
@@ -512,8 +511,8 @@ std::pair<bool, std::optional<PackageToValidate>> TxDownloadManagerImpl::Receive
     const Wtxid& wtxid = ptx->GetWitnessHash();
 
     // Mark that we have received a response
-    m_txrequest.ReceivedResponse(nodeid, txid);
-    if (ptx->HasWitness()) m_txrequest.ReceivedResponse(nodeid, wtxid);
+    m_txrequest.ReceivedResponse(nodeid, txid.ToUint256());
+    if (ptx->HasWitness()) m_txrequest.ReceivedResponse(nodeid, wtxid.ToUint256());
 
     // First check if we should drop this tx.
     // We do the AlreadyHaveTx() check using wtxid, rather than txid - in the
@@ -576,11 +575,11 @@ void TxDownloadManagerImpl::CheckIsEmpty(NodeId nodeid)
 void TxDownloadManagerImpl::CheckIsEmpty()
 {
     assert(m_orphanage->TotalOrphanUsage() == 0);
-    assert(m_orphanage->Size() == 0);
+    assert(m_orphanage->CountUniqueOrphans() == 0);
     assert(m_txrequest.Size() == 0);
     assert(m_num_wtxid_peers == 0);
 }
-std::vector<TxOrphanage::OrphanTxBase> TxDownloadManagerImpl::GetOrphanTransactions() const
+std::vector<TxOrphanage::OrphanInfo> TxDownloadManagerImpl::GetOrphanTransactions() const
 {
     return m_orphanage->GetOrphanTransactions();
 }

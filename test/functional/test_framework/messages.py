@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (c) 2010 ArtForz -- public domain half-a-node
 # Copyright (c) 2012 Jeff Garzik
-# Copyright (c) 2010-2022 The Bitcoin Core developers
+# Copyright (c) 2010-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Bitcoin test framework primitive and message structures
@@ -29,10 +29,14 @@ import time
 import unittest
 
 from test_framework.crypto.siphash import siphash256
-from test_framework.util import assert_equal
+from test_framework.util import (
+    assert_equal,
+    assert_not_equal,
+)
 
 MAX_LOCATOR_SZ = 101
 MAX_BLOCK_WEIGHT = 4000000
+MAX_BLOCK_SIGOPS_COST = 80000
 DEFAULT_BLOCK_RESERVED_WEIGHT = 8000
 MINIMUM_BLOCK_RESERVED_WEIGHT = 2000
 MAX_BLOOM_FILTER_SIZE = 36000
@@ -72,6 +76,7 @@ WITNESS_SCALE_FACTOR = 4
 
 DEFAULT_ANCESTOR_LIMIT = 25    # default max number of in-mempool ancestors
 DEFAULT_DESCENDANT_LIMIT = 25  # default max number of in-mempool descendants
+DEFAULT_CLUSTER_LIMIT = 64     # default max number of transactions in a cluster
 
 
 # Default setting for -datacarriersize.
@@ -79,6 +84,9 @@ MAX_OP_RETURN_RELAY = 100_000
 
 
 DEFAULT_MEMPOOL_EXPIRY_HOURS = 336  # hours
+
+TX_MIN_STANDARD_VERSION = 1
+TX_MAX_STANDARD_VERSION = 3
 
 MAGIC_BYTES = {
     "mainnet": b"\xf9\xbe\xb4\xd9",
@@ -250,6 +258,23 @@ def tx_from_hex(hex_string):
     return from_hex(CTransaction(), hex_string)
 
 
+def malleate_tx_to_invalid_witness(tx):
+    """
+    Create a malleated version of the tx where the witness is replaced with garbage data.
+    Returns a CTransaction object.
+    """
+    tx_bad_wit = tx_from_hex(tx["hex"])
+    tx_bad_wit.wit.vtxinwit = [CTxInWitness()]
+    # Add garbage data to witness 0. We cannot simply strip the witness, as the node would
+    # classify it as a transaction in which the witness was missing rather than wrong.
+    tx_bad_wit.wit.vtxinwit[0].scriptWitness.stack = [b'garbage']
+
+    assert_equal(tx["txid"], tx_bad_wit.txid_hex)
+    assert_not_equal(tx["wtxid"], tx_bad_wit.wtxid_hex)
+
+    return tx_bad_wit
+
+
 # like from_hex, but without the hex part
 def from_binary(cls, stream):
     """deserialize a binary stream (or bytes object) into an object"""
@@ -260,7 +285,7 @@ def from_binary(cls, stream):
     obj = cls()
     obj.deserialize(stream)
     if was_bytes:
-        assert len(stream.read()) == 0
+        assert_equal(len(stream.read()), 0)
     return obj
 
 
@@ -319,7 +344,7 @@ class CAddress:
 
     def serialize(self, *, with_time=True):
         """Serialize in addrv1 format (pre-BIP155)"""
-        assert self.net == self.NET_IPV4
+        assert_equal(self.net, self.NET_IPV4)
         r = b""
         if with_time:
             # VERSION messages serialize CAddress objects without time
@@ -340,7 +365,7 @@ class CAddress:
         assert self.net in self.ADDRV2_NET_NAME
 
         address_length = deser_compact_size(f)
-        assert address_length == self.ADDRV2_ADDRESS_LENGTH[self.net]
+        assert_equal(address_length, self.ADDRV2_ADDRESS_LENGTH[self.net])
 
         addr_bytes = f.read(address_length)
         if self.net == self.NET_IPV4:
@@ -663,24 +688,34 @@ class CTransaction:
         return self.serialize_with_witness()
 
     @property
+    def wtxid(self):
+        """Return wtxid (transaction hash with witness) as little-endian bytes."""
+        return hash256(self.serialize_with_witness())
+
+    @property
     def wtxid_hex(self):
         """Return wtxid (transaction hash with witness) as hex string."""
-        return hash256(self.serialize())[::-1].hex()
+        return self.wtxid[::-1].hex()
 
     @property
     def wtxid_int(self):
         """Return wtxid (transaction hash with witness) as integer."""
-        return uint256_from_str(hash256(self.serialize_with_witness()))
+        return uint256_from_str(self.wtxid)
+
+    @property
+    def txid(self):
+        """Return txid (transaction hash without witness) as little-endian bytes."""
+        return hash256(self.serialize_without_witness())
 
     @property
     def txid_hex(self):
         """Return txid (transaction hash without witness) as hex string."""
-        return hash256(self.serialize_without_witness())[::-1].hex()
+        return self.txid[::-1].hex()
 
     @property
     def txid_int(self):
         """Return txid (transaction hash without witness) as integer."""
-        return uint256_from_str(hash256(self.serialize_without_witness()))
+        return uint256_from_str(self.txid)
 
     def is_valid(self):
         for tout in self.vout:
@@ -1647,7 +1682,7 @@ class msg_sendcmpct:
     __slots__ = ("announce", "version")
     msgtype = b"sendcmpct"
 
-    def __init__(self, announce=False, version=1):
+    def __init__(self, announce=False, version=2):
         self.announce = announce
         self.version = version
 
@@ -1902,6 +1937,28 @@ class msg_sendtxrcncl:
     def __repr__(self):
         return "msg_sendtxrcncl(version=%lu, salt=%lu)" %\
             (self.version, self.salt)
+
+class msg_feature:
+    """FEATURE message for negotiating optional features."""
+    __slots__ = ("feature_id", "feature_data")
+    msgtype = b"feature"
+
+    def __init__(self, feature_id="", feature_data=b""):
+        self.feature_id = feature_id
+        self.feature_data = feature_data
+
+    def deserialize(self, f):
+        self.feature_id = deser_string(f).decode()
+        self.feature_data = deser_string(f)
+
+    def serialize(self):
+        r = ser_string(self.feature_id.encode())
+        r += ser_string(self.feature_data)
+        return r
+
+    def __repr__(self):
+        return f"msg_feature(feature_id={self.feature_id}, data={self.feature_data.hex()})"
+
 
 class TestFrameworkScript(unittest.TestCase):
     def test_addrv2_encode_decode(self):

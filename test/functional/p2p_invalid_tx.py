@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-# Copyright (c) 2015-2022 The Bitcoin Core developers
+# Copyright (c) 2015-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test node responses to invalid transactions.
 
 In this test we connect to one node over p2p, and test tx requests."""
-from test_framework.blocktools import create_block, create_coinbase
+from test_framework.blocktools import create_block
 from test_framework.messages import (
     COIN,
     COutPoint,
@@ -56,7 +56,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
 
         self.log.info("Create a new block with an anyone-can-spend coinbase.")
         height = 1
-        block = create_block(tip, create_coinbase(height), block_time)
+        block = create_block(tip, height=height, ntime=block_time)
         block.solve()
         # Save the coinbase for later
         block1 = block
@@ -73,13 +73,8 @@ class InvalidTxRequestTest(BitcoinTestFramework):
             tx = template.get_tx()
             node.p2ps[0].send_txs_and_test(
                 [tx], node, success=False,
-                expect_disconnect=template.expect_disconnect,
                 reject_reason=template.reject_reason,
             )
-
-            if template.expect_disconnect:
-                self.log.info("Reconnecting to peer")
-                self.reconnect_p2p()
 
         # Make two p2p connections to provide the node with orphans
         # * p2ps[0] will send valid orphan txs (one with low fee)
@@ -140,7 +135,6 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         # tx_orphan_2_no_fee, because it has too low fee (p2ps[0] is not disconnected for relaying that tx)
         # tx_orphan_2_invalid, because it has negative fee (p2ps[1] is disconnected for relaying that tx)
 
-        self.wait_until(lambda: 1 == len(node.getpeerinfo()), timeout=12)  # p2ps[1] is no longer connected
         assert_equal(expected_mempool, set(node.getrawmempool()))
 
         self.log.info('Test orphanage can store more than 100 transactions')
@@ -177,7 +171,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
 
         tip = int(node.getbestblockhash(), 16)
         height = node.getblockcount() + 1
-        block_A = create_block(tip, create_coinbase(height))
+        block_A = create_block(tip, height=height)
         block_A.vtx.extend([tx_withhold, tx_withhold_until_block_A, tx_orphan_include_by_block_A])
         block_A.hashMerkleRoot = block_A.calc_merkle_root()
         block_A.solve()
@@ -185,6 +179,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         self.log.info('Send the block that includes the previous orphan ... ')
         with node.assert_debug_log(["Erased 1 orphan transaction(s) included or conflicted by block"]):
             node.p2ps[0].send_blocks_and_test([block_A], node, success=True)
+            node.syncwithvalidationinterfacequeue()
 
         self.log.info('Test that a transaction in the orphan pool conflicts with a new tip block causes erase this transaction from the orphan pool')
         tx_withhold_until_block_B = CTransaction()
@@ -203,7 +198,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
 
         tip = int(node.getbestblockhash(), 16)
         height = node.getblockcount() + 1
-        block_B = create_block(tip, create_coinbase(height))
+        block_B = create_block(tip, height=height)
         block_B.vtx.extend([tx_withhold_until_block_B, tx_orphan_include_by_block_B])
         block_B.hashMerkleRoot = block_B.calc_merkle_root()
         block_B.solve()
@@ -211,6 +206,7 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         self.log.info('Send the block that includes a transaction which conflicts with the previous orphan ... ')
         with node.assert_debug_log(["Erased 1 orphan transaction(s) included or conflicted by block"]):
             node.p2ps[0].send_blocks_and_test([block_B], node, success=True)
+            node.syncwithvalidationinterfacequeue()
 
 
 if __name__ == '__main__':

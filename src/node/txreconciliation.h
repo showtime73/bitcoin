@@ -1,4 +1,4 @@
-// Copyright (c) 2022 The Bitcoin Core developers
+// Copyright (c) 2022-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -12,7 +12,7 @@
 #include <tuple>
 
 /** Supported transaction reconciliation protocol version */
-static constexpr uint32_t TXRECONCILIATION_VERSION{1};
+inline constexpr uint32_t TXRECONCILIATION_VERSION{1};
 
 enum class ReconciliationRegisterResult {
     NOT_FOUND,

@@ -1,8 +1,8 @@
 # OpenBSD Build Guide
 
-**Updated for OpenBSD [7.6](https://www.openbsd.org/76.html)**
+Bitcoin Core is supported on [the two most recent OpenBSD releases](https://www.openbsd.org/faq/faq5.html#Flavors).
 
-This guide describes how to build bitcoind, command-line utilities, and GUI on OpenBSD.
+This guide describes how to build bitcoind, command-line utilities, and GUI on the latest release.
 
 ## Preparation
 
@@ -10,8 +10,24 @@ This guide describes how to build bitcoind, command-line utilities, and GUI on O
 Run the following as root to install the base dependencies for building.
 
 ```bash
-pkg_add git cmake boost libevent
+pkg_add git cmake boost
 ```
+
+SQLite is required for the wallet:
+
+```bash
+pkg_add sqlite3
+```
+
+To build Bitcoin Core without the wallet, use `-DENABLE_WALLET=OFF`.
+
+Cap'n Proto is needed for IPC functionality (see [multiprocess.md](multiprocess.md)):
+
+```bash
+pkg_add capnproto
+```
+
+Compile with `-DENABLE_IPC=OFF` if you do not need IPC functionality.
 
 See [dependencies.md](dependencies.md) for a complete overview.
 
@@ -22,16 +38,6 @@ git clone https://github.com/bitcoin/bitcoin.git
 ```
 
 ### 3. Install Optional Dependencies
-
-#### Wallet Dependencies
-
-It is not necessary to build wallet functionality to run either `bitcoind` or `bitcoin-qt`.
-SQLite is required to build the wallet.
-
-
-``` bash
-pkg_add sqlite3
-```
 
 #### GUI Dependencies
 ###### Qt6
@@ -58,7 +64,7 @@ Otherwise, if you don't need QR encoding support, use the `-DWITH_QRENCODE=OFF` 
 #### Notifications
 ###### ZeroMQ
 
-Bitcoin Core can provide notifications via ZeroMQ. If the package is installed, support will be compiled in.
+Bitcoin Core can provide notifications via ZeroMQ. To compile ZMQ support, install the following dependency and pass `-DWITH_ZMQ=ON` when configuring.
 ```bash
 pkg_add zeromq
 ```
@@ -77,8 +83,8 @@ pkg_add python py3-zmq  # Select the newest version of the python package if nec
 
 There are many ways to configure Bitcoin Core, here are a few common examples:
 
-##### Descriptor Wallet and GUI:
-This enables descriptor wallet support and the GUI, assuming SQLite and Qt 6 are installed.
+##### Wallet and GUI:
+This enables wallet support and the GUI, assuming SQLite and Qt 6 are installed.
 
 ```bash
 cmake -B build -DBUILD_GUI=ON
@@ -90,7 +96,7 @@ Run `cmake -B build -LH` to see the full list of available options.
 
 ```bash
 cmake --build build     # Append "-j N" for N parallel jobs.
-ctest --test-dir build  # Append "-j N" for N parallel tests. Some tests are disabled if Python 3 is not available.
+ctest --test-dir build  # Append "-j N" for N parallel tests.
 ```
 
 ## Resource limits

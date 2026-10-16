@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2014-2021 The Bitcoin Core developers
+# Copyright (c) 2014-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test running bitcoind with -reindex and -reindex-chainstate options.
@@ -20,6 +20,7 @@ from test_framework.util import (
 
 class ReindexTest(BitcoinTestFramework):
     def set_test_params(self):
+        self.rpc_timeout *= 2  # To avoid timeout when generating the reindex chain
         self.setup_clean_chain = True
         self.num_nodes = 1
 

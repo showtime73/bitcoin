@@ -1,9 +1,9 @@
-// Copyright (c) 2018-2021 The Bitcoin Core developers
+// Copyright (c) 2018-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <common/args.h>
-#include <logging.h>
+#include <util/log.h>
 #include <walletinitinterface.h>
 
 class ArgsManager;
@@ -21,7 +21,7 @@ public:
     bool HasWalletSupport() const override {return false;}
     void AddWalletOptions(ArgsManager& argsman) const override;
     bool ParameterInteraction() const override {return true;}
-    void Construct(node::NodeContext& node) const override {LogPrintf("No wallet support compiled in!\n");}
+    void Construct(node::NodeContext& node) const override { LogInfo("No wallet support compiled in!"); }
 };
 
 void DummyWalletInit::AddWalletOptions(ArgsManager& argsman) const
@@ -37,8 +37,8 @@ void DummyWalletInit::AddWalletOptions(ArgsManager& argsman) const
         "-keypool=<n>",
         "-maxapsfee=<n>",
         "-maxtxfee=<amt>",
+        "-maxfeerate=<amt>",
         "-mintxfee=<amt>",
-        "-paytxfee=<amt>",
         "-signer=<cmd>",
         "-spendzeroconfchange",
         "-txconfirmtarget=<n>",

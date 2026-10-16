@@ -1,4 +1,4 @@
-// Copyright (c) 2016-2021 The Bitcoin Core developers
+// Copyright (c) 2016-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -16,9 +16,9 @@
 #include <string>
 #include <stdexcept>
 
-static RPCHelpMan rpcNestedTest_rpc()
+static RPCMethod rpcNestedTest_rpc()
 {
-    return RPCHelpMan{
+    return RPCMethod{
         "rpcNestedTest",
         "echo the passed string(s)",
         {
@@ -28,7 +28,7 @@ static RPCHelpMan rpcNestedTest_rpc()
         },
         RPCResult{RPCResult::Type::ANY, "", ""},
         RPCExamples{""},
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue {
+        [](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue {
             return request.params.write(0, 0);
         },
     };
@@ -85,6 +85,12 @@ void RPCNestedTests::rpcNestedTests()
     QVERIFY(result == "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b");
     QVERIFY(filtered == "getblock(getbestblockhash())[tx][0]");
 
+    RPCConsole::RPCParseCommandLine(nullptr, result, "createwallet test true", false, &filtered);
+    QVERIFY(filtered == "createwallet(…)");
+    RPCConsole::RPCParseCommandLine(nullptr, result, "createwalletdescriptor abc", false, &filtered);
+    QVERIFY(filtered == "createwalletdescriptor(…)");
+    RPCConsole::RPCParseCommandLine(nullptr, result, "migratewallet abc abc", false, &filtered);
+    QVERIFY(filtered == "migratewallet(…)");
     RPCConsole::RPCParseCommandLine(nullptr, result, "signmessagewithprivkey abc", false, &filtered);
     QVERIFY(filtered == "signmessagewithprivkey(…)");
     RPCConsole::RPCParseCommandLine(nullptr, result, "signmessagewithprivkey abc,def", false, &filtered);
@@ -128,6 +134,11 @@ void RPCNestedTests::rpcNestedTests()
     QVERIFY_EXCEPTION_THROWN(RPCConsole::RPCExecuteCommandLine(m_node, result, "getblockchaininfo() getblockchaininfo()"), std::runtime_error); //invalid syntax
     RPCConsole::RPCExecuteCommandLine(m_node, result, "getblockchaininfo("); //tolerate non closing brackets if we have no arguments
     RPCConsole::RPCExecuteCommandLine(m_node, result, "getblockchaininfo()()()"); //tolerate non command brackets
+    RPCConsole::RPCExecuteCommandLine(m_node, result, "getblockchaininfo)"); //tolerate a closing bracket after a command
+    QVERIFY(!RPCConsole::RPCExecuteCommandLine(m_node, result, ")")); //reject a closing bracket with no command (empty argument stack)
+    QVERIFY(!RPCConsole::RPCExecuteCommandLine(m_node, result, "()")); //reject empty brackets with no command
+    QVERIFY(!RPCConsole::RPCExecuteCommandLine(m_node, result, "(")); //reject an opening bracket with no command
+    QVERIFY(!RPCConsole::RPCExecuteCommandLine(m_node, result, ",")); //reject a comma with no command
     QVERIFY_EXCEPTION_THROWN(RPCConsole::RPCExecuteCommandLine(m_node, result, "getblockchaininfo(True)"), UniValue); //invalid argument
     QVERIFY_EXCEPTION_THROWN(RPCConsole::RPCExecuteCommandLine(m_node, result, "a(getblockchaininfo(True))"), UniValue); //method not found
     QVERIFY_EXCEPTION_THROWN(RPCConsole::RPCExecuteCommandLine(m_node, result, "rpcNestedTest abc,,abc"), std::runtime_error); //don't tolerate empty arguments when using ,

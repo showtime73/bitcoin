@@ -12,6 +12,7 @@
 #include <array>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 enum class OutputType {
@@ -22,14 +23,14 @@ enum class OutputType {
     UNKNOWN,
 };
 
-static constexpr auto OUTPUT_TYPES = std::array{
+inline constexpr auto OUTPUT_TYPES = std::array{
     OutputType::LEGACY,
     OutputType::P2SH_SEGWIT,
     OutputType::BECH32,
     OutputType::BECH32M,
 };
 
-std::optional<OutputType> ParseOutputType(const std::string& str);
+std::optional<OutputType> ParseOutputType(std::string_view str);
 const std::string& FormatOutputType(OutputType type);
 std::string FormatAllOutputTypes();
 

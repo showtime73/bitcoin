@@ -7,8 +7,13 @@
 
 #include <blockfilter.h>
 #include <common/settings.h>
+#include <consensus/amount.h>
+#include <kernel/chain.h> // IWYU pragma: export
 #include <primitives/transaction.h>
+#include <util/expected.h>
+#include <util/fees.h>
 #include <util/result.h>
+#include <util/time.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -19,9 +24,7 @@
 #include <string>
 #include <vector>
 
-class ArgsManager;
 class CBlock;
-class CBlockUndo;
 class CFeeRate;
 class CRPCCommand;
 class CScheduler;
@@ -29,18 +32,18 @@ class Coin;
 class uint256;
 enum class MemPoolRemovalReason;
 enum class RBFTransactionState;
-enum class ChainstateRole;
 struct bilingual_str;
 struct CBlockLocator;
-struct FeeCalculation;
+namespace kernel {
+struct ChainstateRole;
+} // namespace kernel
 namespace node {
 struct NodeContext;
+enum class TxBroadcast : uint8_t;
 } // namespace node
 
 namespace interfaces {
-
 class Handler;
-class Wallet;
 
 //! Helper for findBlock to selectively return pieces of block data. If block is
 //! found, data will be returned by setting specified output variables. If block
@@ -73,22 +76,6 @@ public:
     const FoundBlock* m_next_block = nullptr;
     CBlock* m_data = nullptr;
     mutable bool found = false;
-};
-
-//! Block data sent with blockConnected, blockDisconnected notifications.
-struct BlockInfo {
-    const uint256& hash;
-    const uint256* prev_hash = nullptr;
-    int height = -1;
-    int file_number = -1;
-    unsigned data_pos = 0;
-    const CBlock* data = nullptr;
-    const CBlockUndo* undo_data = nullptr;
-    // The maximum time in the chain up to and including this block.
-    // A timestamp that can only move forward.
-    unsigned int chain_time_max{0};
-
-    BlockInfo(const uint256& hash LIFETIMEBOUND) : hash(hash) {}
 };
 
 //! The action to be taken after updating a settings value.
@@ -142,13 +129,6 @@ public:
     //! Check that the block is available on disk (i.e. has not been
     //! pruned), and contains transactions.
     virtual bool haveBlockOnDisk(int height) = 0;
-
-    //! Get locator for the current chain tip.
-    virtual CBlockLocator getTipLocator() = 0;
-
-    //! Return a locator that refers to a block in the active chain.
-    //! If specified block is not in the active chain, return locator for the latest ancestor that is in the chain.
-    virtual CBlockLocator getActiveChainLocator(const uint256& block_hash) = 0;
 
     //! Return height of the highest block on chain in common with the locator,
     //! which will either be the original block used to create the locator,
@@ -211,18 +191,26 @@ public:
     virtual bool isInMempool(const Txid& txid) = 0;
 
     //! Check if transaction has descendants in mempool.
-    virtual bool hasDescendantsInMempool(const uint256& txid) = 0;
+    virtual bool hasDescendantsInMempool(const Txid& txid) = 0;
 
-    //! Transaction is added to memory pool, if the transaction fee is below the
-    //! amount specified by max_tx_fee, and broadcast to all peers if relay is set to true.
-    //! Return false if the transaction could not be added due to the fee or for another reason.
+    //! Process a local transaction, optionally adding it to the mempool and
+    //! optionally broadcasting it to the network.
+    //! @param[in] tx Transaction to process.
+    //! @param[in] max_tx_fee Don't add the transaction to the mempool or
+    //! broadcast it if its fee is higher than this.
+    //! @param[in] max_tx_fee_rate reject txs with fee rate higher than this (if CFeeRate(0), the fee rate is not checked)
+    //! @param[in] broadcast_method Whether to add the transaction to the
+    //! mempool and how/whether to broadcast it.
+    //! @param[out] err_string Set if an error occurs.
+    //! @return False if the transaction could not be added due to the fee or for another reason.
     virtual bool broadcastTransaction(const CTransactionRef& tx,
-        const CAmount& max_tx_fee,
-        bool relay,
-        std::string& err_string) = 0;
+                                      const CAmount& max_tx_fee,
+                                      const CFeeRate& max_tx_fee_rate,
+                                      node::TxBroadcast broadcast_method,
+                                      std::string& err_string) = 0;
 
-    //! Calculate mempool ancestor and descendant counts for the given transaction.
-    virtual void getTransactionAncestry(const uint256& txid, size_t& ancestors, size_t& descendants, size_t* ancestorsize = nullptr, CAmount* ancestorfees = nullptr) = 0;
+    //! Calculate mempool ancestor and cluster counts for the given transaction.
+    virtual void getTransactionAncestry(const Txid& txid, size_t& ancestors, size_t& cluster_count, size_t* ancestorsize = nullptr, CAmount* ancestorfees = nullptr) = 0;
 
     //! For each outpoint, calculate the fee-bumping cost to spend this outpoint at the specified
     //  feerate, including bumping its ancestors. For example, if the target feerate is 10sat/vbyte
@@ -269,11 +257,11 @@ public:
     //! Check if transaction will pass the mempool's chain limits.
     virtual util::Result<void> checkChainLimits(const CTransactionRef& tx) = 0;
 
-    //! Estimate smart fee.
-    virtual CFeeRate estimateSmartFee(int num_blocks, bool conservative, FeeCalculation* calc = nullptr) = 0;
+    //! Estimate a fee rate.
+    virtual util::Expected<FeeRateEstimation, FeeRateEstimationError> getFeeRateEstimate(int num_blocks, bool conservative) const = 0;
 
     //! Fee estimator max target.
-    virtual unsigned int estimateMaxBlocks() = 0;
+    virtual unsigned int maximumFeeEstimationTargetBlocks() const = 0;
 
     //! Mempool minimum fee.
     virtual CFeeRate mempoolMinFee() = 0;
@@ -321,10 +309,10 @@ public:
         virtual ~Notifications() = default;
         virtual void transactionAddedToMempool(const CTransactionRef& tx) {}
         virtual void transactionRemovedFromMempool(const CTransactionRef& tx, MemPoolRemovalReason reason) {}
-        virtual void blockConnected(ChainstateRole role, const BlockInfo& block) {}
+        virtual void blockConnected(const kernel::ChainstateRole& role, const BlockInfo& block) {}
         virtual void blockDisconnected(const BlockInfo& block) {}
         virtual void updatedBlockTip() {}
-        virtual void chainStateFlushed(ChainstateRole role, const CBlockLocator& locator) {}
+        virtual void chainStateFlushed(const kernel::ChainstateRole& role, const CBlockLocator& locator) {}
     };
 
     //! Options specifying which chain notifications are required.
@@ -339,11 +327,17 @@ public:
     };
 
     //! Register handler for notifications.
+    //! Some notifications are asynchronous and may still execute after the handler is disconnected.
+    //! Use waitForNotifications() after the handler is disconnected to ensure all pending notifications
+    //! have been processed.
     virtual std::unique_ptr<Handler> handleNotifications(std::shared_ptr<Notifications> notifications) = 0;
 
     //! Wait for pending notifications to be processed unless block hash points to the current
     //! chain tip.
     virtual void waitForNotificationsIfTipChanged(const uint256& old_tip) = 0;
+
+    //! Wait for all pending notifications up to this point to be processed
+    virtual void waitForNotifications() = 0;
 
     //! Register handler for RPC. Command is not copied, so reference
     //! needs to remain valid until Handler is disconnected.
@@ -366,6 +360,9 @@ public:
     //! support for writing null values to settings.json.
     //! Depending on the action returned by the update function, this will either
     //! update the setting in memory or write the updated settings to disk.
+    //! Returns false if the update function returned no action, or if the
+    //! settings could not be written to disk, including when settings are
+    //! disabled with -nosettings. In-memory changes are kept either way.
     virtual bool updateRwSetting(const std::string& name, const SettingsUpdate& update_function) = 0;
 
     //! Replace a setting in <datadir>/settings.json with a new value.
@@ -389,7 +386,9 @@ public:
     //! removed transactions and already added new transactions.
     virtual void requestMempoolTransactions(Notifications& notifications) = 0;
 
-    //! Return true if an assumed-valid chain is in use.
+    //! Return true if an assumed-valid snapshot is in use. Note that this
+    //! returns true even after the snapshot is validated, until the next node
+    //! restart.
     virtual bool hasAssumedValidChain() = 0;
 
     //! Get internal node context. Useful for testing, but not

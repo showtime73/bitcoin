@@ -1,8 +1,8 @@
 # FreeBSD Build Guide
 
-**Updated for FreeBSD [14.3](https://www.freebsd.org/releases/14.3R/announce/)**
+Bitcoin Core is supported on all [supported FreeBSD releases](https://www.freebsd.org/security/#sup).
 
-This guide describes how to build bitcoind, command-line utilities, and GUI on FreeBSD.
+This guide describes how to build bitcoind, command-line utilities, and GUI on the most recent production release.
 
 ## Preparation
 
@@ -10,8 +10,24 @@ This guide describes how to build bitcoind, command-line utilities, and GUI on F
 Run the following as root to install the base dependencies for building.
 
 ```bash
-pkg install boost-libs cmake git libevent pkgconf
+pkg install boost-libs cmake git
 ```
+
+SQLite is required for the wallet:
+
+```bash
+pkg install sqlite3
+```
+
+To build Bitcoin Core without the wallet, use `-DENABLE_WALLET=OFF`.
+
+Cap'n Proto is needed for IPC functionality (see [multiprocess.md](multiprocess.md)):
+
+```bash
+pkg install capnproto
+```
+
+Compile with `-DENABLE_IPC=OFF` if you do not need IPC functionality.
 
 See [dependencies.md](dependencies.md) for a complete overview.
 
@@ -22,17 +38,6 @@ git clone https://github.com/bitcoin/bitcoin.git
 ```
 
 ### 3. Install Optional Dependencies
-
-#### Wallet Dependencies
-It is not necessary to build wallet functionality to run either `bitcoind` or `bitcoin-qt`.
-
-###### Descriptor Wallet Support
-
-`sqlite3` is required to support [descriptor wallets](descriptors.md).
-Skip if you don't intend to use descriptor wallets.
-```bash
-pkg install sqlite3
-```
 
 #### GUI Dependencies
 ###### Qt6
@@ -59,9 +64,9 @@ Otherwise, if you don't need QR encoding support, use the `-DWITH_QRENCODE=OFF` 
 #### Notifications
 ###### ZeroMQ
 
-Bitcoin Core can provide notifications via ZeroMQ. If the package is installed, support will be compiled in.
+Bitcoin Core can provide notifications via ZeroMQ. To compile ZMQ support, install the following dependency and pass `-DWITH_ZMQ=ON` when configuring.
 ```bash
-pkg install libzmq4
+pkg install libzmq4 pkgconf
 ```
 
 #### Test Suite Dependencies
@@ -69,7 +74,7 @@ There is an included test suite that is useful for testing code changes when dev
 To run the test suite (recommended), you will need to have Python 3 installed:
 
 ```bash
-pkg install python3 databases/py-sqlite3 net/py-pyzmq
+pkg install python3 databases/py-sqlite3 net/py-pyzmq lsof
 ```
 ---
 
@@ -79,7 +84,7 @@ pkg install python3 databases/py-sqlite3 net/py-pyzmq
 
 There are many ways to configure Bitcoin Core, here are a few common examples:
 
-##### Descriptor Wallet and GUI:
+##### Wallet and GUI:
 This enables the GUI, assuming `sqlite` and `qt` are installed.
 ```bash
 cmake -B build -DBUILD_GUI=ON
@@ -96,5 +101,5 @@ cmake -B build -DENABLE_WALLET=OFF
 
 ```bash
 cmake --build build     # Append "-j N" for N parallel jobs.
-ctest --test-dir build  # Append "-j N" for N parallel tests. Some tests are disabled if Python 3 is not available.
+ctest --test-dir build  # Append "-j N" for N parallel tests.
 ```

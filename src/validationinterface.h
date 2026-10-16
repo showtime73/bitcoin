@@ -6,10 +6,10 @@
 #ifndef BITCOIN_VALIDATIONINTERFACE_H
 #define BITCOIN_VALIDATIONINTERFACE_H
 
-#include <kernel/chain.h>
 #include <kernel/cs_main.h>
 #include <primitives/transaction.h>
 #include <sync.h>
+#include <uint256.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +17,9 @@
 #include <memory>
 #include <vector>
 
+namespace kernel {
+struct ChainstateRole;
+} // namespace kernel
 namespace util {
 class TaskRunnerInterface;
 } // namespace util
@@ -110,15 +113,17 @@ protected:
      * as a result of new block being connected.
      * MempoolTransactionsRemovedForBlock will be fired before BlockConnected.
      *
+     * Not fired while initial block download is active.
+     *
      * Called on a background thread.
      */
-    virtual void MempoolTransactionsRemovedForBlock(const std::vector<RemovedMempoolTransactionInfo>& txs_removed_for_block, unsigned int nBlockHeight) {}
+    virtual void MempoolTransactionsRemovedForBlock(const std::shared_ptr<const CBlock>& block, const std::vector<RemovedMempoolTransactionInfo>& txs_removed_for_block, unsigned int block_height) {}
     /**
      * Notifies listeners of a block being connected.
      *
      * Called on a background thread.
      */
-    virtual void BlockConnected(ChainstateRole role, const std::shared_ptr<const CBlock> &block, const CBlockIndex *pindex) {}
+    virtual void BlockConnected(const kernel::ChainstateRole& role, const std::shared_ptr<const CBlock>& block, const CBlockIndex* pindex) {}
     /**
      * Notifies listeners of a block being disconnected
      * Provides the block that was disconnected.
@@ -143,14 +148,14 @@ protected:
      *
      * Called on a background thread.
      */
-    virtual void ChainStateFlushed(ChainstateRole role, const CBlockLocator &locator) {}
+    virtual void ChainStateFlushed(const kernel::ChainstateRole& role, const CBlockLocator& locator) {}
     /**
      * Notifies listeners of a block validation result.
      * If the provided BlockValidationState IsValid, the provided block
      * is guaranteed to be the current best block at the time the
      * callback was generated (not necessarily now).
      */
-    virtual void BlockChecked(const CBlock&, const BlockValidationState&) {}
+    virtual void BlockChecked(const std::shared_ptr<const CBlock>&, const BlockValidationState&) {}
     /**
      * Notifies listeners that a block which builds directly on our current tip
      * has been received and connected to the headers tree, though not validated yet.
@@ -220,11 +225,11 @@ public:
     void ActiveTipChange(const CBlockIndex&, bool);
     void TransactionAddedToMempool(const NewMempoolTransactionInfo&, uint64_t mempool_sequence);
     void TransactionRemovedFromMempool(const CTransactionRef&, MemPoolRemovalReason, uint64_t mempool_sequence);
-    void MempoolTransactionsRemovedForBlock(const std::vector<RemovedMempoolTransactionInfo>&, unsigned int nBlockHeight);
-    void BlockConnected(ChainstateRole, const std::shared_ptr<const CBlock> &, const CBlockIndex *pindex);
-    void BlockDisconnected(const std::shared_ptr<const CBlock> &, const CBlockIndex* pindex);
-    void ChainStateFlushed(ChainstateRole, const CBlockLocator &);
-    void BlockChecked(const CBlock&, const BlockValidationState&);
+    void MempoolTransactionsRemovedForBlock(std::shared_ptr<const CBlock>, std::vector<RemovedMempoolTransactionInfo>, unsigned int block_height);
+    void BlockConnected(const kernel::ChainstateRole&, std::shared_ptr<const CBlock>, const CBlockIndex* pindex);
+    void BlockDisconnected(std::shared_ptr<const CBlock>, const CBlockIndex* pindex);
+    void ChainStateFlushed(const kernel::ChainstateRole&, const CBlockLocator&);
+    void BlockChecked(const std::shared_ptr<const CBlock>&, const BlockValidationState&);
     void NewPoWValidBlock(const CBlockIndex *, const std::shared_ptr<const CBlock>&);
 };
 

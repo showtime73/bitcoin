@@ -1,4 +1,4 @@
-// Copyright (c) 2017-2022 The Bitcoin Core developers
+// Copyright (c) 2017-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -7,7 +7,7 @@
 #include <chainparams.h>
 #include <common/args.h>
 #include <key_io.h>
-#include <logging.h>
+#include <util/log.h>
 
 namespace wallet {
 fs::path GetWalletDir()
@@ -30,20 +30,6 @@ fs::path GetWalletDir()
     }
 
     return path;
-}
-
-bool IsFeatureSupported(int wallet_version, int feature_version)
-{
-    return wallet_version >= feature_version;
-}
-
-WalletFeature GetClosestWalletFeature(int version)
-{
-    static constexpr std::array wallet_features{FEATURE_LATEST, FEATURE_PRE_SPLIT_KEYPOOL, FEATURE_NO_DEFAULT_KEY, FEATURE_HD_SPLIT, FEATURE_HD, FEATURE_COMPRPUBKEY, FEATURE_WALLETCRYPT, FEATURE_BASE};
-    for (const WalletFeature& wf : wallet_features) {
-        if (version >= wf) return wf;
-    }
-    return static_cast<WalletFeature>(0);
 }
 
 WalletDescriptor GenerateWalletDescriptor(const CExtPubKey& master_key, const OutputType& addr_type, bool internal)
@@ -97,6 +83,33 @@ WalletDescriptor GenerateWalletDescriptor(const CExtPubKey& master_key, const Ou
     std::vector<std::unique_ptr<Descriptor>> desc = Parse(desc_str, keys, error, false);
     WalletDescriptor w_desc(std::move(desc.at(0)), creation_time, 0, 0, 0);
     return w_desc;
+}
+
+void WalletDescriptor::UpdateFrom(const WalletDescriptor& other)
+{
+    if (!IsCanonicallyEquivalent(other)) {
+        return;
+    }
+    range_start = other.range_start;
+    next_index = other.next_index;
+    range_end = other.range_end;
+    creation_time = other.creation_time;
+    cache = other.cache;
+}
+
+uint256 WalletDescriptor::GetCanonicalHash() const
+{
+    if (!m_canonical_hash) {
+        m_canonical_hash.emplace();
+        std::string canonical = descriptor->ToCanonicalString();
+        CSHA256().Write((unsigned char*)canonical.data(), canonical.size()).Finalize(m_canonical_hash->begin());
+    }
+    return *m_canonical_hash;
+}
+
+bool WalletDescriptor::IsCanonicallyEquivalent(const WalletDescriptor& other) const
+{
+    return GetCanonicalHash() == other.GetCanonicalHash();
 }
 
 } // namespace wallet

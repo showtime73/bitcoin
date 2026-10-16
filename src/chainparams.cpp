@@ -1,5 +1,5 @@
 // Copyright (c) 2010 Satoshi Nakamoto
-// Copyright (c) 2009-2022 The Bitcoin Core developers
+// Copyright (c) 2009-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -9,9 +9,9 @@
 #include <common/args.h>
 #include <consensus/params.h>
 #include <deploymentinfo.h>
-#include <logging.h>
 #include <tinyformat.h>
 #include <util/chaintype.h>
+#include <util/log.h>
 #include <util/strencodings.h>
 #include <util/string.h>
 
@@ -23,29 +23,8 @@
 
 using util::SplitString;
 
-void ReadSigNetArgs(const ArgsManager& args, CChainParams::SigNetOptions& options)
+static void HandleDeploymentArgs(const ArgsManager& args, CChainParams::DeploymentOptions& options)
 {
-    if (!args.GetArgs("-signetseednode").empty()) {
-        options.seeds.emplace(args.GetArgs("-signetseednode"));
-    }
-    if (!args.GetArgs("-signetchallenge").empty()) {
-        const auto signet_challenge = args.GetArgs("-signetchallenge");
-        if (signet_challenge.size() != 1) {
-            throw std::runtime_error("-signetchallenge cannot be multiple values.");
-        }
-        const auto val{TryParseHex<uint8_t>(signet_challenge[0])};
-        if (!val) {
-            throw std::runtime_error(strprintf("-signetchallenge must be hex, not '%s'.", signet_challenge[0]));
-        }
-        options.challenge.emplace(*val);
-    }
-}
-
-void ReadRegTestArgs(const ArgsManager& args, CChainParams::RegTestOptions& options)
-{
-    if (auto value = args.GetBoolArg("-fastprune")) options.fastprune = *value;
-    if (HasTestOption(args, "bip94")) options.enforce_bip94 = true;
-
     for (const std::string& arg : args.GetArgs("-testactivationheight")) {
         const auto found{arg.find('@')};
         if (found == std::string::npos) {
@@ -96,7 +75,8 @@ void ReadRegTestArgs(const ArgsManager& args, CChainParams::RegTestOptions& opti
             if (vDeploymentParams[0] == VersionBitsDeploymentInfo[j].name) {
                 options.version_bits_parameters[Consensus::DeploymentPos(j)] = vbparams;
                 found = true;
-                LogPrintf("Setting version bits activation parameters for %s to start=%ld, timeout=%ld, min_activation_height=%d\n", vDeploymentParams[0], vbparams.start_time, vbparams.timeout, vbparams.min_activation_height);
+                LogInfo("Setting version bits activation parameters for %s to start=%ld, timeout=%ld, min_activation_height=%d",
+                        vDeploymentParams[0], vbparams.start_time, vbparams.timeout, vbparams.min_activation_height);
                 break;
             }
         }
@@ -104,6 +84,43 @@ void ReadRegTestArgs(const ArgsManager& args, CChainParams::RegTestOptions& opti
             throw std::runtime_error(strprintf("Invalid deployment (%s)", vDeploymentParams[0]));
         }
     }
+}
+
+void ReadMainNetArgs(const ArgsManager& args, CChainParams::MainNetOptions& options)
+{
+    HandleDeploymentArgs(args, options.dep_opts);
+}
+
+void ReadTestNetArgs(const ArgsManager& args, CChainParams::TestNetOptions& options)
+{
+    HandleDeploymentArgs(args, options.dep_opts);
+}
+
+void ReadSigNetArgs(const ArgsManager& args, CChainParams::SigNetOptions& options)
+{
+    if (!args.GetArgs("-signetseednode").empty()) {
+        options.seeds.emplace(args.GetArgs("-signetseednode"));
+    }
+    if (!args.GetArgs("-signetchallenge").empty()) {
+        const auto signet_challenge = args.GetArgs("-signetchallenge");
+        if (signet_challenge.size() != 1) {
+            throw std::runtime_error("-signetchallenge cannot be multiple values.");
+        }
+        const auto val{TryParseHex<uint8_t>(signet_challenge[0])};
+        if (!val) {
+            throw std::runtime_error(strprintf("-signetchallenge must be hex, not '%s'.", signet_challenge[0]));
+        }
+        options.challenge.emplace(*val);
+    }
+    HandleDeploymentArgs(args, options.dep_opts);
+}
+
+void ReadRegTestArgs(const ArgsManager& args, CChainParams::RegTestOptions& options)
+{
+    if (auto value = args.GetBoolArg("-fastprune")) options.fastprune = *value;
+    if (HasTestOption(args, "bip94")) options.enforce_bip94 = true;
+
+    HandleDeploymentArgs(args, options.dep_opts);
 }
 
 static std::unique_ptr<const CChainParams> globalChainParams;
@@ -116,12 +133,21 @@ const CChainParams &Params() {
 std::unique_ptr<const CChainParams> CreateChainParams(const ArgsManager& args, const ChainType chain)
 {
     switch (chain) {
-    case ChainType::MAIN:
-        return CChainParams::Main();
-    case ChainType::TESTNET:
-        return CChainParams::TestNet();
-    case ChainType::TESTNET4:
-        return CChainParams::TestNet4();
+    case ChainType::MAIN: {
+        auto opts = CChainParams::MainNetOptions{};
+        ReadMainNetArgs(args, opts);
+        return CChainParams::Main(opts);
+    }
+    case ChainType::TESTNET: {
+        auto opts = CChainParams::TestNetOptions{};
+        ReadTestNetArgs(args, opts);
+        return CChainParams::TestNet(opts);
+    }
+    case ChainType::TESTNET4: {
+        auto opts = CChainParams::TestNetOptions{};
+        ReadTestNetArgs(args, opts);
+        return CChainParams::TestNet4(opts);
+    }
     case ChainType::SIGNET: {
         auto opts = CChainParams::SigNetOptions{};
         ReadSigNetArgs(args, opts);

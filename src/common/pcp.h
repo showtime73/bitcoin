@@ -1,4 +1,4 @@
-// Copyright (c) 2024 The Bitcoin Core developers
+// Copyright (c) 2024-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or https://www.opensource.org/licenses/mit-license.php.
 
@@ -6,14 +6,21 @@
 #define BITCOIN_COMMON_PCP_H
 
 #include <netaddress.h>
+#include <util/time.h>
 
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
 #include <variant>
+
+class CThreadInterrupt;
 
 // RFC6886 NAT-PMP and RFC6887 Port Control Protocol (PCP) implementation.
 // NAT-PMP and PCP use network byte order (big-endian).
 
 //! Mapping nonce size in bytes (see RFC6887 section 11.1).
-constexpr size_t PCP_MAP_NONCE_SIZE = 12;
+inline constexpr size_t PCP_MAP_NONCE_SIZE = 12;
 
 //! PCP mapping nonce. Arbitrary data chosen by the client to identify a mapping.
 typedef std::array<uint8_t, PCP_MAP_NONCE_SIZE> PCPMappingNonce;
@@ -51,7 +58,7 @@ struct MappingResult {
 //! * num_tries: Number of tries in case of no response.
 //!
 //! Returns the external_ip:external_port of the mapping if successful, otherwise a MappingError.
-std::variant<MappingResult, MappingError> NATPMPRequestPortMap(const CNetAddr &gateway, uint16_t port, uint32_t lifetime, int num_tries = 3, std::chrono::milliseconds timeout_per_try = std::chrono::milliseconds(1000));
+std::variant<MappingResult, MappingError> NATPMPRequestPortMap(const CNetAddr &gateway, uint16_t port, uint32_t lifetime, CThreadInterrupt& interrupt, int num_tries = 3, std::chrono::milliseconds timeout_per_try = std::chrono::milliseconds(1000));
 
 //! Try to open a port using RFC 6887 Port Control Protocol (PCP). Handles IPv4 and IPv6.
 //!
@@ -63,6 +70,6 @@ std::variant<MappingResult, MappingError> NATPMPRequestPortMap(const CNetAddr &g
 //! * num_tries: Number of tries in case of no response.
 //!
 //! Returns the external_ip:external_port of the mapping if successful, otherwise a MappingError.
-std::variant<MappingResult, MappingError> PCPRequestPortMap(const PCPMappingNonce &nonce, const CNetAddr &gateway, const CNetAddr &bind, uint16_t port, uint32_t lifetime, int num_tries = 3, std::chrono::milliseconds timeout_per_try = std::chrono::milliseconds(1000));
+std::variant<MappingResult, MappingError> PCPRequestPortMap(const PCPMappingNonce &nonce, const CNetAddr &gateway, const CNetAddr &bind, uint16_t port, uint32_t lifetime, CThreadInterrupt& interrupt, int num_tries = 3, std::chrono::milliseconds timeout_per_try = std::chrono::milliseconds(1000));
 
 #endif // BITCOIN_COMMON_PCP_H

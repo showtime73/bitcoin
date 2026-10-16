@@ -8,15 +8,15 @@
 
 #include <rpc/request.h>
 #include <rpc/util.h>
+#include <univalue.h>
 
 #include <cstdint>
 #include <functional>
 #include <map>
 #include <string>
-
-#include <univalue.h>
-
-class CRPCCommand;
+#include <string_view>
+#include <utility>
+#include <vector>
 
 /** Query whether RPC is running */
 bool IsRPCRunning();
@@ -29,13 +29,14 @@ void RpcInterruptionPoint();
  * immediately with RPC_IN_WARMUP.
  */
 void SetRPCWarmupStatus(const std::string& newStatus);
+void SetRPCWarmupStarting();
 /* Mark warmup as done.  RPC calls will be processed from now on.  */
 void SetRPCWarmupFinished();
 
 /* returns the current warmup state.  */
 bool RPCIsInWarmup(std::string *outStatus);
 
-typedef RPCHelpMan (*RpcMethodFnType)();
+typedef RPCMethod (*RpcMethodFnType)();
 
 class CRPCCommand
 {
@@ -61,6 +62,7 @@ public:
               fn().GetArgNames(),
               intptr_t(fn))
     {
+        this->metadata_fn = fn;
     }
 
     std::string category;
@@ -77,6 +79,7 @@ public:
     //! appended after other arguments, see transformNamedArguments for details.
     std::vector<std::pair<std::string, bool>> argNames;
     intptr_t unique_id;
+    RpcMethodFnType metadata_fn{nullptr};
 };
 
 /**
@@ -88,7 +91,7 @@ private:
     std::map<std::string, std::vector<const CRPCCommand*>> mapCommands;
 public:
     CRPCTable();
-    std::string help(const std::string& name, const JSONRPCRequest& helpreq) const;
+    std::string help(std::string_view name, const JSONRPCRequest& helpreq) const;
 
     /**
      * Execute a method.
@@ -103,6 +106,8 @@ public:
     * @returns List of registered commands.
     */
     std::vector<std::string> listCommands() const;
+    /** Return a complete OpenRPC 1.4.1 document for registered commands. */
+    UniValue buildOpenRPCDoc(bool include_hidden = false) const;
 
     /**
      * Return all named arguments that need to be converted by the client from string to another JSON type
